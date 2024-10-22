@@ -1,0 +1,51 @@
+{
+    "task_id": "task-202",
+    "frequency": 20,
+    "devices": [
+      {
+        "device_id": "r1",
+        "device_metrics": {
+          "cpu_usage": true,
+          "ram_usage": true,
+          "interface_stats": ["eth0", "eth1"]
+        },
+        "link_metrics": {
+          "bandwidth": {
+            "iperf_role": "client",
+            "server_ip": "192.168.1.20",
+            "duration": 10,
+            "transport": "UDP",
+            "frequency": 30
+          },
+          "jitter": {
+            "enabled": true,
+            "iperf_role": "client",
+            "server_ip": "192.168.1.20",
+            "frequency": 30
+          },
+          "packet_loss": {
+            "enabled": true,
+            "iperf_role": "client",
+            "server_ip": "192.168.1.20",
+            "frequency": 30
+          },
+          "latency": {
+            "ping_destination": "192.168.1.1",
+            "count": 5,
+            "frequency": 10
+          }
+        },
+        "alertflow_conditions": {
+          "cpu_usage": 80,
+          "ram_usage": 90,
+          "interface_stats": {
+            "eth0": 2000,
+            "eth1": 1500
+          },
+          "packet_loss": 5,
+          "jitter": 100
+        }
+      }
+    ]
+  }
+  
