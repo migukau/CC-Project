@@ -11,10 +11,16 @@ udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # Socket para UDP
 tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # Socket para TCP
 
 # Função para enviar métricas via UDP
-def send_metric(cpu_usage):
-    metric_data = f"cpu_usage={cpu_usage}%"  # Exemplo de métrica
-    udp_socket.sendto(metric_data.encode(), udp_server_address)
-    print(f"[Métrica Enviada] {metric_data}")
+def send_metric(metrics):
+    try:
+        # Convertendo o dicionário de métricas para uma string
+        metric_data = f"cpu_usage={metrics['cpu_usage']}%, memory_usage={metrics['memory_usage']}%, disk_usage={metrics['disk_usage']}%, network_io_sent={metrics['network_io'].bytes_sent}, network_io_recv={metrics['network_io'].bytes_recv}"
+        udp_socket.sendto(metric_data.encode(), udp_server_address)
+        print(f"[Métricas Enviadas]")
+        display_metrics(metrics)
+        
+    except Exception as e:
+        print(f"Erro ao enviar métrica: {e}")
 
 # Função para enviar alertas via TCP
 def send_alert():
@@ -60,12 +66,12 @@ def monitor_metrics():
         # Pausa de 5 segundos antes de enviar a próxima métrica
         time.sleep(5)
 
-# def display_metrics(metrics):
-#     print("CPU Usage: {}%".format(metrics['cpu_usage']))
-#     print("Memory Usage: {}%".format(metrics['memory_usage']))
-#     print("Disk Usage: {}%".format(metrics['disk_usage']))
-#     print("Network IO: Sent = {} bytes, Received = {} bytes".format(
-#         metrics['network_io'].bytes_sent, metrics['network_io'].bytes_recv))
+def display_metrics(metrics):
+     print("CPU Usage: {}%".format(metrics['cpu_usage']))
+     print("Memory Usage: {}%".format(metrics['memory_usage']))
+     print("Disk Usage: {}%".format(metrics['disk_usage']))
+     print("Network IO: Sent = {} bytes, Received = {} bytes".format(
+        metrics['network_io'].bytes_sent, metrics['network_io'].bytes_recv))
 
 # Executa a monitorização das métricas
 if __name__ == "__main__":
