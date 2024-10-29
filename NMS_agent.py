@@ -2,16 +2,16 @@ import socket
 import time
 
 # Endereço do NMS_Server para enviar métricas (UDP) e alertas (TCP)
-udp_server_address = ('10.0.0.2', 12345)  # IP do servidor, porta 12345 (UDP)
-tcp_server_address = ('10.0.0.2', 54321)  # IP do servidor, porta 54321 (TCP)
+udp_server_address = ('10.0.3.10', 1234)  # IP do servidor, porta 12345 (UDP)
+tcp_server_address = ('10.0.3.10', 4321)  # IP do servidor, porta 54321 (TCP)
 
 # Criando sockets
 udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # Socket para UDP
 tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # Socket para TCP
 
 # Função para enviar métricas via UDP
-def send_metric():
-    metric_data = "cpu_usage=75%"  # Exemplo de métrica
+def send_metric(cpu_usage):
+    metric_data = f"cpu_usage={cpu_usage}%"  # Exemplo de métrica
     udp_socket.sendto(metric_data.encode(), udp_server_address)
     print(f"[Métrica Enviada] {metric_data}")
 
@@ -32,7 +32,7 @@ def monitor_metrics():
     cpu_usage = 75  # Valor de CPU inicial
     while True:
         # Envia métricas periodicamente via UDP
-        send_metric()
+        send_metric(cpu_usage)
         
         # Verifica se o uso de CPU excede 90% e envia alerta via TCP
         if cpu_usage > 90:
