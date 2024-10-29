@@ -2,6 +2,10 @@ import socket
 import time
 import psutil
 
+#Passamos para bytes na função send message (to bytes)
+MESSAGE_TYPE_ALERT = 1
+MESSAGE_TYPE_DATA = 2
+
 # Endereço do NMS_Server para enviar métricas (UDP) e alertas (TCP)
 udp_server_address = ('10.0.3.10', 1234)  # IP do servidor, porta 12345 (UDP)
 tcp_server_address = ('10.0.3.10', 4321)  # IP do servidor, porta 54321 (TCP)
@@ -22,12 +26,24 @@ def send_metric(metrics):
     except Exception as e:
         print(f"Erro ao enviar métrica: {e}")
 
+# Função para enviar mensagens
+def send_message(sock, message_type, message):
+    # Create a 1-byte header for the message type
+    header = message_type.to_bytes(1, byteorder='big')
+    # Encode the message
+    encoded_message = message.encode()
+    # Concatenate header and message
+    full_message = header + encoded_message
+    # Send the full message
+    sock.sendall(full_message)
+
+
 # Função para enviar alertas via TCP
 def send_alert():
     try:
         tcp_socket.connect(tcp_server_address)  # Conectar ao servidor
         alert_message = "Alerta: CPU ultrapassou 90%"
-        tcp_socket.sendall(alert_message.encode())
+        send_message(tcp_socket, MESSAGE_TYPE_ALERT, alert_message)
         print(f"[Alerta Enviado] {alert_message}")
     except Exception as e:
         print(f"Erro ao enviar alerta: {e}")
@@ -58,7 +74,7 @@ def monitor_metrics():
         
         # Verifica se o uso de CPU excede 90% e envia alerta via TCP
         if cpu_usage > 90:
-            send_alert()
+            send_alert('cpu_usage')
         
         # Simular o aumento de uso de CPU ao longo do tempo
         cpu_usage += 5
