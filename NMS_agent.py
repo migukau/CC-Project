@@ -3,9 +3,11 @@ import time
 import psutil
 
 #Passamos para bytes na função send message (to bytes)
-MESSAGE_TYPE_ALERT = 1
-MESSAGE_TYPE_DATA = 2
-
+MESSAGE_TYPE_ALERT = 000 # messagem tipo alerta
+MESSAGE_TYPE_DATA = 001 # message tipo dados
+MESSAGE_TYPE_AKC = 010  # message tipo akc
+MESSAGE_TYPE_REGISTRATION = 011 # message tipo registro
+MESSAGE_TYPE_END = 100 # message pedir parar terminar licação agent server
 # Endereço do NMS_Server para enviar métricas (UDP) e alertas (TCP)
 udp_server_address = ('10.0.3.10', 1234)  # IP do servidor, porta 12345 (UDP)
 tcp_server_address = ('10.0.3.10', 4321)  # IP do servidor, porta 54321 (TCP)
