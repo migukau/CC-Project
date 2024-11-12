@@ -1,5 +1,6 @@
 import socket
 import threading
+import json 
 
 def udp_server():
     server_address = ('0.0.0.0', 12345)  # Porta para métricas
@@ -69,7 +70,90 @@ def send_task_to_agent(agent_ip, metric, limit):
     finally:
         udp_socket.close()
 
-
+# Função para carregar e interpretar o arquivo JSON
+def parse_task_file(file_path):
+    # Carrega o conteúdo do arquivo JSON
+    with open(file_path, 'r') as file:
+        data = json.load(file)
+    
+    # Extrai informações principais
+    task_id = data.get("task_id")
+    frequency = data.get("frequency")
+    
+    print(f"Task ID: {task_id}")
+    print(f"Frequency: {frequency} seconds")
+    
+    # Itera pelos dispositivos listados
+    devices = data.get("devices", [])
+    for device in devices:
+        device_id = device.get("device_id") #agent_id
+        device_metrics = device.get("device_metrics", {}) #
+        link_metrics = device.get("link_metrics", {})
+        alertflow_conditions = device.get("alertflow_conditions", {})
+        
+        print(f"\nDevice ID: {device_id}")
+        
+        # Device metrics
+        cpu_usage = device_metrics.get("cpu_usage")
+        ram_usage = device_metrics.get("ram_usage")
+        #interface_stats = device_metrics.get("interface_stats", [])
+        
+        print(f"  CPU Usage Monitoring: {cpu_usage}")
+        print(f"  RAM Usage Monitoring: {ram_usage}")
+       # print(f"  Interface Stats: {', '.join(interface_stats) if interface_stats else 'None'}")
+        
+        # Link metrics
+        for metric_name, metric in link_metrics.items():
+            print(f"  Link Metric: {metric_name.capitalize()}")
+            if metric_name == "bandwidth":
+                iperf_role = metric.get("iperf_role")
+                server_ip = metric.get("server_ip")
+                duration = metric.get("duration")
+                transport = metric.get("transport")
+                link_frequency = metric.get("frequency")
+                
+                print(f"    - Role: {iperf_role}")
+                print(f"    - Server IP: {server_ip}")
+                print(f"    - Duration: {duration} seconds")
+                print(f"    - Transport: {transport}")
+                print(f"    - Frequency: {link_frequency} seconds")
+                
+            elif metric_name in ["jitter", "packet_loss"]:
+                enabled = metric.get("enabled")
+                iperf_role = metric.get("iperf_role")
+                server_ip = metric.get("server_ip")
+                link_frequency = metric.get("frequency")
+                
+                print(f"    - Enabled: {enabled}")
+                print(f"    - Role: {iperf_role}")
+                print(f"    - Server IP: {server_ip}")
+                print(f"    - Frequency: {link_frequency} seconds")
+                
+            elif metric_name == "latency":
+                ping_destination = metric.get("ping_destination")
+                count = metric.get("count")
+                link_frequency = metric.get("frequency")
+                
+                print(f"    - Ping Destination: {ping_destination}")
+                print(f"    - Count: {count}")
+                print(f"    - Frequency: {link_frequency} seconds")
+        
+        # Alertflow conditions
+        print("  Alertflow Conditions:")
+        cpu_alert = alertflow_conditions.get("cpu_usage")
+        ram_alert = alertflow_conditions.get("ram_usage")
+        interface_alerts = alertflow_conditions.get("interface_stats", {})
+        packet_loss_alert = alertflow_conditions.get("packet_loss")
+        jitter_alert = alertflow_conditions.get("jitter")
+        
+        print(f"    - CPU Usage Alert if above: {cpu_alert}%")
+        print(f"    - RAM Usage Alert if above: {ram_alert}%")
+        for interface, threshold in interface_alerts.items():
+            print(f"    - {interface} Bandwidth Alert if above: {threshold} Mbps")
+        print(f"    - Packet Loss Alert if above: {packet_loss_alert}%")
+        print(f"    - Jitter Alert if above: {jitter_alert} ms")
+    
+    print("\nParsing completed.")
 # Executa as duas funções de servidor (UDP e TCP) em threads separadas
 # Integração do módulo de JSON com o servidor
 if __name__ == "__main__":
@@ -81,6 +165,7 @@ if __name__ == "__main__":
     udp_thread = threading.Thread(target=udp_server)
     tcp_thread = threading.Thread(target=tcp_server)
 
+    parse_task_file(json_file)
     udp_thread.start()
     tcp_thread.start()
 

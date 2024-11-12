@@ -8,6 +8,8 @@ MESSAGE_TYPE_DATA = 001 # message tipo dados
 MESSAGE_TYPE_AKC = 010  # message tipo akc
 MESSAGE_TYPE_REGISTRATION = 011 # message tipo registro
 MESSAGE_TYPE_END = 100 # message pedir parar terminar licação agent server
+MESSAGE_TYPE_TASK = 101 # message da tarefa enviada pelo seervidor para o agente
+
 # Endereço do NMS_Server para enviar métricas (UDP) e alertas (TCP)
 udp_server_address = ('10.0.3.10', 1234)  # IP do servidor, porta 12345 (UDP)
 tcp_server_address = ('10.0.3.10', 4321)  # IP do servidor, porta 54321 (TCP)
@@ -90,6 +92,12 @@ def display_metrics(metrics):
      print("Disk Usage: {}%".format(metrics['disk_usage']))
      print("Network IO: Sent = {} bytes, Received = {} bytes".format(
         metrics['network_io'].bytes_sent, metrics['network_io'].bytes_recv))
+     
+
+
+# Chama a função de parsing no caminho do arquivo JSON
+parse_task_file("path_to_your_file.json")
+
 
 # Executa a monitorização das métricas
 if __name__ == "__main__":

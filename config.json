@@ -3,18 +3,16 @@
     "frequency": 20,
     "devices": [
       {
-        "device_id": "r1",
+        "device_id": "1",
         "device_metrics": {
           "cpu_usage": true,
-          "ram_usage": true,
-          "interface_stats": ["eth0", "eth1"]
+          "ram_usage": true
+          
         },
         "link_metrics": {
           "bandwidth": {
             "iperf_role": "client",
-            "server_ip": "192.168.1.20",
             "duration": 10,
-            "transport": "UDP",
             "frequency": 30
           },
           "jitter": {
