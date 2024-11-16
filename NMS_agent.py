@@ -99,6 +99,7 @@ def display_metrics(metrics):
 parse_task_file("path_to_your_file.json")
 
 
+
 # Executa a monitorização das métricas
 if __name__ == "__main__":
     monitor_metrics()

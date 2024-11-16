@@ -72,22 +72,53 @@ def send_task_to_agent(agent_ip, metric, limit):
 
 # Função para carregar e interpretar o arquivo JSON
 def parse_task_file(file_path):
-    # Carrega o conteúdo do arquivo JSON
-    with open(file_path, 'r') as file:
-        data = json.load(file)
+    try:
+        # Carrega o conteúdo do arquivo JSON
+        with open(file_path, 'r') as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        print(f"Erro: Arquivo {file_path} não encontrado.")
+        return None
+    except json.JSONDecodeError:
+        print(f"Erro: O arquivo {file_path} não contém um JSON válido.")
+        return None
+    except Exception as e:
+        print(f"Erro ao ler o arquivo: {str(e)}")
+        return None
+
+    # Validação de campos obrigatórios
+    required_fields = ["task_id", "frequency", "devices"]
+    for field in required_fields:
+        if field not in data:
+            print(f"Erro: Campo obrigatório '{field}' não encontrado no JSON.")
+            return None
     
     # Extrai informações principais
     task_id = data.get("task_id")
     frequency = data.get("frequency")
+    
+    # Validação de frequency
+    if not isinstance(frequency, (int, float)) or frequency <= 0:
+        print("Erro: 'frequency' deve ser um número positivo.")
+        return None
     
     print(f"Task ID: {task_id}")
     print(f"Frequency: {frequency} seconds")
     
     # Itera pelos dispositivos listados
     devices = data.get("devices", [])
+    if not devices:
+        print("Aviso: Nenhum dispositivo encontrado no arquivo de tarefas.")
+        return None
+    
     for device in devices:
-        device_id = device.get("device_id") #agent_id
-        device_metrics = device.get("device_metrics", {}) #
+        # Validação de campos obrigatórios do dispositivo
+        if "device_id" not in device:
+            print("Erro: Dispositivo sem 'device_id'")
+            continue
+            
+        device_id = device.get("device_id")
+        device_metrics = device.get("device_metrics", {})
         link_metrics = device.get("link_metrics", {})
         alertflow_conditions = device.get("alertflow_conditions", {})
         
@@ -96,21 +127,38 @@ def parse_task_file(file_path):
         # Device metrics
         cpu_usage = device_metrics.get("cpu_usage")
         ram_usage = device_metrics.get("ram_usage")
-        #interface_stats = device_metrics.get("interface_stats", [])
+        
+        # Validação de métricas
+        if cpu_usage is not None and not isinstance(cpu_usage, bool):
+            print(f"Aviso: CPU usage para dispositivo {device_id} deve ser boolean")
+        if ram_usage is not None and not isinstance(ram_usage, bool):
+            print(f"Aviso: RAM usage para dispositivo {device_id} deve ser boolean")
         
         print(f"  CPU Usage Monitoring: {cpu_usage}")
         print(f"  RAM Usage Monitoring: {ram_usage}")
-       # print(f"  Interface Stats: {', '.join(interface_stats) if interface_stats else 'None'}")
         
         # Link metrics
         for metric_name, metric in link_metrics.items():
             print(f"  Link Metric: {metric_name.capitalize()}")
             if metric_name == "bandwidth":
+                required_bandwidth_fields = ["iperf_role", "server_ip", "duration", "transport", "frequency"]
+                if not all(field in metric for field in required_bandwidth_fields):
+                    print(f"Aviso: Campos obrigatórios ausentes na métrica bandwidth para {device_id}")
+                    continue
+                    
                 iperf_role = metric.get("iperf_role")
                 server_ip = metric.get("server_ip")
                 duration = metric.get("duration")
                 transport = metric.get("transport")
                 link_frequency = metric.get("frequency")
+                
+                # Validação de valores
+                if duration <= 0:
+                    print(f"Aviso: duration deve ser positivo para {device_id}")
+                if transport not in ["tcp", "udp"]:
+                    print(f"Aviso: transport deve ser 'tcp' ou 'udp' para {device_id}")
+                if link_frequency <= 0:
+                    print(f"Aviso: frequency deve ser positivo para {device_id}")
                 
                 print(f"    - Role: {iperf_role}")
                 print(f"    - Server IP: {server_ip}")
@@ -119,10 +167,21 @@ def parse_task_file(file_path):
                 print(f"    - Frequency: {link_frequency} seconds")
                 
             elif metric_name in ["jitter", "packet_loss"]:
+                required_fields = ["enabled", "iperf_role", "server_ip", "frequency"]
+                if not all(field in metric for field in required_fields):
+                    print(f"Aviso: Campos obrigatórios ausentes na métrica {metric_name} para {device_id}")
+                    continue
+                    
                 enabled = metric.get("enabled")
                 iperf_role = metric.get("iperf_role")
                 server_ip = metric.get("server_ip")
                 link_frequency = metric.get("frequency")
+                
+                # Validação de valores
+                if not isinstance(enabled, bool):
+                    print(f"Aviso: enabled deve ser boolean para {metric_name} em {device_id}")
+                if link_frequency <= 0:
+                    print(f"Aviso: frequency deve ser positivo para {metric_name} em {device_id}")
                 
                 print(f"    - Enabled: {enabled}")
                 print(f"    - Role: {iperf_role}")
@@ -130,9 +189,20 @@ def parse_task_file(file_path):
                 print(f"    - Frequency: {link_frequency} seconds")
                 
             elif metric_name == "latency":
+                required_fields = ["ping_destination", "count", "frequency"]
+                if not all(field in metric for field in required_fields):
+                    print(f"Aviso: Campos obrigatórios ausentes na métrica latency para {device_id}")
+                    continue
+                    
                 ping_destination = metric.get("ping_destination")
                 count = metric.get("count")
                 link_frequency = metric.get("frequency")
+                
+                # Validação de valores
+                if count <= 0:
+                    print(f"Aviso: count deve ser positivo para latency em {device_id}")
+                if link_frequency <= 0:
+                    print(f"Aviso: frequency deve ser positivo para latency em {device_id}")
                 
                 print(f"    - Ping Destination: {ping_destination}")
                 print(f"    - Count: {count}")
@@ -146,14 +216,28 @@ def parse_task_file(file_path):
         packet_loss_alert = alertflow_conditions.get("packet_loss")
         jitter_alert = alertflow_conditions.get("jitter")
         
+        # Validação de alertas
+        if cpu_alert is not None and (not isinstance(cpu_alert, (int, float)) or cpu_alert < 0 or cpu_alert > 100):
+            print(f"Aviso: CPU alert deve ser uma porcentagem válida (0-100) para {device_id}")
+        if ram_alert is not None and (not isinstance(ram_alert, (int, float)) or ram_alert < 0 or ram_alert > 100):
+            print(f"Aviso: RAM alert deve ser uma porcentagem válida (0-100) para {device_id}")
+        if packet_loss_alert is not None and (not isinstance(packet_loss_alert, (int, float)) or packet_loss_alert < 0 or packet_loss_alert > 100):
+            print(f"Aviso: Packet loss alert deve ser uma porcentagem válida (0-100) para {device_id}")
+        if jitter_alert is not None and (not isinstance(jitter_alert, (int, float)) or jitter_alert < 0):
+            print(f"Aviso: Jitter alert deve ser um valor positivo para {device_id}")
+        
         print(f"    - CPU Usage Alert if above: {cpu_alert}%")
         print(f"    - RAM Usage Alert if above: {ram_alert}%")
         for interface, threshold in interface_alerts.items():
+            if not isinstance(threshold, (int, float)) or threshold < 0:
+                print(f"Aviso: Interface alert threshold deve ser um valor positivo para {interface} em {device_id}")
             print(f"    - {interface} Bandwidth Alert if above: {threshold} Mbps")
         print(f"    - Packet Loss Alert if above: {packet_loss_alert}%")
         print(f"    - Jitter Alert if above: {jitter_alert} ms")
     
     print("\nParsing completed.")
+    return data
+
 # Executa as duas funções de servidor (UDP e TCP) em threads separadas
 # Integração do módulo de JSON com o servidor
 if __name__ == "__main__":
