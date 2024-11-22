@@ -2,11 +2,14 @@ import socket
 import time
 import threading
 import json
+import questionary
+import os
 
 # CONFIG:
-HOST = '10.2.2.1'   # IP do servidor
-UDP_PORT = 24       # Porta UDP
-TCP_PORT = 64       # Porta TCP
+HOST = '127.0.0.1'  # IP local para testes
+UDP_PORT = 5000     # Porta UDP alterada
+TCP_PORT = 5001     # Porta TCP alterada
+
 SEND_INTERVAL = 20  # Intervalo de envio de métricas em segundos
 # ___________________________________
 
@@ -30,6 +33,9 @@ metrics_lock = threading.Lock()
 tasks = {}
 tasks_lock = threading.Lock()
 # ___________________________________
+
+# Evento de controlo para encerrar o servidor
+shutdown_event = threading.Event()
 
 # Leitura de tarefas do arquivo JSON
 def load_tasks():
@@ -64,7 +70,7 @@ def send_task_to_agent(agent_id, addr):
 # UDP Handshake e Comunicação
 def udp_listener():
     print("[UDP] Servidor aguardando mensagens...")
-    while True:
+    while not shutdown_event.is_set():
         try:
             data, addr = udp_socket.recvfrom(4096)
             message = data.decode()
@@ -136,7 +142,7 @@ def process_metric_message(message, addr):
 def handle_tcp_connection(conn, addr):
     print(f"[TCP] Conexão estabelecida com {addr}")
     try:
-        while True:
+        while not shutdown_event.is_set():
             data = conn.recv(4096).decode()
             if not data:
                 continue
@@ -157,7 +163,7 @@ def handle_tcp_connection(conn, addr):
 def tcp_main_thread():
     tcp_socket.listen()
     print("[TCP] Servidor aguardando conexões...")
-    while True:
+    while not shutdown_event.is_set():
         try:
             conn, addr = tcp_socket.accept()
             print(f"[TCP] Conexão recebida de {addr}")
@@ -168,7 +174,7 @@ def tcp_main_thread():
 
 # Monitoramento de atividade dos agentes
 def monitor_agents():
-    while True:
+    while not shutdown_event.is_set():
         time.sleep(5)
         now = time.time()
         with agents_lock:
@@ -177,24 +183,63 @@ def monitor_agents():
                     print(f"[MONITOR] Agente {agent_id} removido por inatividade")
                     del agents[agent_id]
 
-# Início do Servidor
+# Exemplo de função para limpar o terminal
+def clear_terminal():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+# Mostrar menu de agentes (com questionary)
+def show_agents_menu():
+    while not shutdown_event.is_set():
+        # Obter lista de agentes conectados
+        with agents_lock:
+            connected_agents = [
+                f"{agent_id} ({info['address'][0]}:{info['address'][1]})"
+                for agent_id, info in agents.items()
+            ]
+
+        # Mostrar a lista de agentes conectados
+        clear_terminal()
+        print("Agentes conectados ao servidor:\n")
+        print("\n".join(connected_agents) if connected_agents else "Nenhum agente conectado no momento.")
+        print("\n")  # Separação visual
+
+        # Mostrar as opções no menu
+        option = questionary.select(
+            "Escolha uma opção:",
+            choices=["Atualizar lista de agentes", "Sair"]
+        ).ask()
+
+        if option == "Atualizar lista de agentes":
+            # Atualiza o menu
+            continue
+        elif option == "Sair":
+            clear_terminal()
+            print("Encerrando menu de agentes...")
+            shutdown_event.set()
+            break
+
+# Início do servidor
 def start_server():
     # Carregar tarefas do arquivo JSON
     load_tasks()
 
-    # Iniciar threads para UDP e TCP
+    # Iniciar threads para UDP, TCP, menu e monitoramento de agentes
     threading.Thread(target=udp_listener, daemon=True).start()
     threading.Thread(target=tcp_main_thread, daemon=True).start()
+    threading.Thread(target=show_agents_menu, daemon=True).start()
+    threading.Thread(target=monitor_agents, daemon=True).start()
 
-    # Monitorar agentes
-    monitor_agents()
-
-if __name__ == "__main__":
+    # Manter o servidor ativo enquanto as threads daemon estão rodando
     try:
-        start_server()
+        while not shutdown_event.is_set():
+            time.sleep(1)  # Aguarde sem bloquear
     except KeyboardInterrupt:
         print("[SERVER] Servidor interrompido manualmente")
     finally:
+        
         udp_socket.close()
         tcp_socket.close()
         print("[SERVER] Sockets fechados")
+
+if __name__ == "__main__":
+    start_server()
