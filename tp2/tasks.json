@@ -30,6 +30,20 @@
         "cpu_usage": 75,
         "latency": 150
       }
+    },
+    {
+      "device_id": "Foca",
+      "device_metrics": {
+        "cpu_usage": true,
+        "ram_usage": false
+      },
+      "link_metrics": {
+        "latency": true
+      },
+      "alertflow_conditions": {
+        "cpu_usage": 75,
+        "latency": 150
+      }
     }
   ]
 }
