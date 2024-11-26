@@ -18,10 +18,10 @@ AGENT_ID = f"{platform.node()}"
 # Variáveis globais
 task = {}
 alert_conditions = {}
+alerts_sent = {"cpu_usage": False, "ram_usage": False, "latency": False}
 sequence_number = 0
 ack_received = threading.Event()
 udp_lock = threading.Lock()
-alerts_sent = {"cpu_usage": False, "ram_usage": False, "latency": False}
 
 # SOCKETS:
 udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -76,61 +76,51 @@ def udp_handshake():
     print("[HANDSHAKE] O Handshake falhou após o nr máximo de retransmissões.")
     return False
 
-# Função para obter ping
-def get_ping():
-    try:
-        result = subprocess.run(
-            ["ping", "-c", "4", HOST],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=10
-        )
-
-        for line in result.stdout.split("\n"):
-            if "min/avg/max" in line:
-                avg_rtt = float(line.split("/")[4])  # RTT médio (ms)
-                return avg_rtt
-    except Exception as e:
-        print(f"Erro ao obter ping: {e}")
-
-    return None
-
-# Receber tarefa do servidor
-def receive_task():
-    global task, alert_conditions
-    try:
-        udp_socket.settimeout(10)
-        data, addr = udp_socket.recvfrom(4096)
-        _, _, _, payload = decode_message(data)
-        task = json.loads(payload)
-        alert_conditions = task.get('alertflow_conditions', {})
-        print(f"[TASK] Tarefa recebida: {task}")
-    except Exception as e:
-        print(f"[TASK] Erro ao receber tarefa: {e}")
-        task = {}
-        alert_conditions = {}
-
-#  Métricas
-def collect_metrics():
-    """Coleta métricas para envio periódico."""
+# Coleta e verificação de métricas
+def collect_and_check_metrics():
+    """Coleta métricas e verifica thresholds para alertas."""
     metric_data = {}
     device_metrics = task.get('device_metrics', {})
     link_metrics = task.get('link_metrics', {})
 
-    if device_metrics.get('cpu_usage'):
-        metric_data['cpu_usage'] = psutil.cpu_percent(interval=1)
+    # CPU Usage
+    if "cpu_usage" in device_metrics:
+        cpu_usage = psutil.cpu_percent(interval=1)
+        metric_data["cpu_usage"] = cpu_usage
+        if "cpu_usage" in alert_conditions and cpu_usage > alert_conditions["cpu_usage"]:
+            if not alerts_sent["cpu_usage"]:
+                send_alert(f"CPU_USAGE excedido: {cpu_usage}%")
+                alerts_sent["cpu_usage"] = True
 
-    if device_metrics.get('ram_usage'):
-        metric_data['ram_usage'] = psutil.virtual_memory().percent
+    # RAM Usage
+    if "ram_usage" in device_metrics:
+        ram_usage = psutil.virtual_memory().percent
+        metric_data["ram_usage"] = ram_usage
+        if "ram_usage" in alert_conditions and ram_usage > alert_conditions["ram_usage"]:
+            if not alerts_sent["ram_usage"]:
+                send_alert(f"RAM_USAGE excedido: {ram_usage}%")
+                alerts_sent["ram_usage"] = True
 
-    if link_metrics.get('latency'):
-        metric_data['latency'] = get_ping()
+    # Latency
+    if "latency" in link_metrics:
+        latency = get_ping()
+        metric_data["latency"] = latency
+        if "latency" in alert_conditions and latency and latency > alert_conditions["latency"]:
+            if not alerts_sent["latency"]:
+                send_alert(f"LATENCY excedido: {latency} ms")
+                alerts_sent["latency"] = True
 
     return metric_data
 
+# Monitoramento de Alertas
+def monitor_alerts():
+    while True:
+        if task:
+            # Apenas coleta e verifica alertas
+            collect_and_check_metrics()
+        time.sleep(5)  # Frequência de monitoramento
 
-# Envio de métricas
+# Envio de métricas periódicas
 def send_metrics():
     global sequence_number
     frequency = task.get('frequency', 20)
@@ -139,24 +129,10 @@ def send_metrics():
 
     while True:
         if task:
-            metric_data = {}
+            # Coleta as métricas atuais
+            metric_data = collect_and_check_metrics()
 
-            # Coleta de métricas, mas pula se alerta foi enviado recentemente
-            if not alerts_sent["cpu_usage"] and "cpu_usage" in task.get('device_metrics', {}):
-                metric_data["cpu_usage"] = psutil.cpu_percent(interval=1)
-
-            if not alerts_sent["ram_usage"] and "ram_usage" in task.get('device_metrics', {}):
-                metric_data["ram_usage"] = psutil.virtual_memory().percent
-
-            if not alerts_sent["latency"] and "latency" in task.get('link_metrics', {}):
-                metric_data["latency"] = get_ping()
-
-            # Se não há métricas a enviar, saltamos este ciclo
-            if not metric_data:
-                time.sleep(frequency)
-                continue
-
-            # Criar payload e enviar métricas
+            # Cria payload e envia métricas
             payload = json.dumps({
                 "agent_id": AGENT_ID,
                 "timestamp": time.time(),
@@ -172,7 +148,7 @@ def send_metrics():
 
                 with udp_lock:
                     udp_socket.sendto(message, (HOST, UDP_PORT))
-                    print(f"[METRIC] Métricas enviadas (tentativa nr_{attempts + 1}): {metric_data}")
+                    print(f"[METRIC] Métricas enviadas (tentativa {attempts + 1}): {metric_data}")
                 attempts += 1
 
                 try:
@@ -184,12 +160,12 @@ def send_metrics():
                         sequence_number += 1
                         print("[METRIC] ACK recebido do servidor")
                 except socket.timeout:
-                    print("[METRIC] Timeout ao esperar pelo ACK, a retransmitir...")
+                    print("[METRIC] Timeout ao esperar pelo ACK, retransmitindo...")
 
             if not ack_received.is_set():
-                print("[METRIC] Falha no envio de métricas após atingido o nr máximo de retransmissões.")
+                print("[METRIC] Falha no envio de métricas após máximo de retransmissões.")
 
-            # Resetar alertas após enviar métricas
+            # Reset de alertas após envio periódico
             for key in alerts_sent:
                 alerts_sent[key] = False
 
@@ -197,44 +173,31 @@ def send_metrics():
         else:
             time.sleep(1)
 
+# Função para obter ping
+def get_ping():
+    try:
+        result = subprocess.run(
+            ["ping", "-c", "4", HOST],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10
+        )
+        for line in result.stdout.split("\n"):
+            if "min/avg/max" in line:
+                avg_rtt = float(line.split("/")[4])  # RTT médio (ms)
+                return avg_rtt
+    except Exception as e:
+        print(f"Erro ao obter ping: {e}")
+    return None
 
-
-def monitor_alerts():
-    while True:
-        if task:
-            # Coletar as métricas críticas
-            cpu_usage = psutil.cpu_percent(interval=1)
-            if "cpu_usage" in alert_conditions and cpu_usage > alert_conditions["cpu_usage"]:
-                if not alerts_sent["cpu_usage"]:  # Enviar apenas se não foi enviado um alert antes
-                    send_alert(f"CPU_USAGE excedido: {cpu_usage}%")
-                    alerts_sent["cpu_usage"] = True
-            
-            ram_usage = psutil.virtual_memory().percent
-            if "ram_usage" in alert_conditions and ram_usage > alert_conditions["ram_usage"]:
-                if not alerts_sent["ram_usage"]:  # Enviar apenas se não foi enviado um alert antes
-                    send_alert(f"RAM_USAGE excedido: {ram_usage}%")
-                    alerts_sent["ram_usage"] = True
-
-            ping_value = get_ping()
-            if "latency" in alert_conditions and ping_value and ping_value > alert_conditions["latency"]:
-                if not alerts_sent["latency"]:  # Enviar apenas se não foi enviado um alert antes
-                    send_alert(f"LATENCY excedido: {ping_value} ms")
-                    alerts_sent["latency"] = True
-
-        time.sleep(1)  # Pequeno intervalo para evitar sobrecarga
-
-
-
-
-
-# Envio de alertas:
+# Envio de alertas
 def send_alert(alert_message):
     try:
         tcp_socket.sendall(f"ALERT:{AGENT_ID}:{alert_message}".encode())
         print(f"[ALERT] Enviado: {alert_message}")
     except Exception as e:
         print(f"[ALERT] Erro ao enviar alerta: {e}")
-
 
 # Conectar ao servidor via TCP
 def tcp_connect():
@@ -243,6 +206,21 @@ def tcp_connect():
         print("[TCP] Conectado ao servidor.")
     except Exception as e:
         print(f"[TCP] Erro ao conectar: {e}")
+
+# Receber tarefa do servidor
+def receive_task():
+    global task, alert_conditions
+    try:
+        udp_socket.settimeout(10)
+        data, addr = udp_socket.recvfrom(4096)
+        _, _, _, payload = decode_message(data)
+        task = json.loads(payload)
+        alert_conditions = task.get('alertflow_conditions', {})
+        print(f"[TASK] Tarefa recebida: {task}")
+    except Exception as e:
+        print(f"[TASK] Erro ao receber tarefa: {e}")
+        task = {}
+        alert_conditions = {}
 
 # Programa principal
 def start_agent():
@@ -270,7 +248,6 @@ def start_agent():
     finally:
         udp_socket.close()
         tcp_socket.close()
-
 
 if __name__ == "__main__":
     start_agent()
