@@ -3,9 +3,12 @@ import time
 import threading
 import json
 import csv
+import questionary
+import os
+import sys
 
 # CONFIG:
-HOST = '10.2.2.1'   # IP do servidor
+HOST = '10.0.3.10'   # IP do servidor
 UDP_PORT = 24       # Porta UDP
 TCP_PORT = 64       # Porta TCP
 SEND_INTERVAL = 20  # Intervalo para monitoramento de agentes
@@ -29,7 +32,8 @@ udp_socket.bind((HOST, UDP_PORT))
 tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 tcp_socket.bind((HOST, TCP_PORT))
 
-
+# Evento de controlo para encerrar o servidor
+shutdown_event = threading.Event()
 
 # Funções de codificação/decodificação
 
@@ -256,25 +260,64 @@ def log_alerts_to_csv(agent_id, alert_message):
             'alert': alert_combined
         })
 
+def clear_terminal():
+    if os.name == 'nt':  # Para sistemas Windows
+        os.system('cls')
+    else:  # Para sistemas POSIX (Linux, macOS)
+        sys.stdout.write('\033c')  # ANSI escape code para limpar o terminal
+        sys.stdout.flush()
+
+# Mostrar menu de agentes (com questionary)
+def show_agents_menu():
+    while not shutdown_event.is_set():
+        # Obter lista de agentes conectados
+        with agents_lock:
+            connected_agents = [
+                f"{agent_id} ({info['address'][0]}:{info['address'][1]})"
+                for agent_id, info in agents.items()
+            ]
+
+        # Mostrar a lista de agentes conectados
+        clear_terminal()
+        print("Agentes conectados ao servidor:\n")
+        print("\n".join(connected_agents) if connected_agents else "Nenhum agente conectado no momento.")
+        print("\n")  # Separação visual
+
+        # Mostrar as opções no menu
+        option = questionary.select(
+            "Escolha uma opção:",
+            choices=["Atualizar lista de agentes", "Sair"]
+        ).ask()
+
+        if option == "Atualizar lista de agentes":
+            # Atualiza o menu
+            continue
+        elif option == "Sair":
+            clear_terminal()
+            print("Encerrando menu de agentes...")
+            shutdown_event.set()
+            break
 
 # Iniciar o servidor
 def start_server():
     # Load do JSON
     load_tasks()
 
-    # Iniciar threads para UDP e TCP
+    # Iniciar threads
     threading.Thread(target=udp_listener, daemon=True).start()
     threading.Thread(target=tcp_main_thread, daemon=True).start()
+    threading.Thread(target=show_agents_menu, daemon=True).start()
+    threading.Thread(target=monitor_agents, daemon=True).start()
 
-    # Monitorar agentes
-    monitor_agents()
-
-if __name__ == "__main__":
     try:
-        start_server()
+        while not shutdown_event.is_set():
+            time.sleep(0.5)
     except KeyboardInterrupt:
-        print("[SERVER] Servidor interrompido manualmente.")
+        print("[SERVER] Servidor interrompido manualmente")
     finally:
         udp_socket.close()
         tcp_socket.close()
         print("[SERVER] Sockets fechados")
+
+if __name__ == "__main__":
+    start_server()
