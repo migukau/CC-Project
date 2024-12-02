@@ -183,7 +183,6 @@ def monitor_agents():
                     print(f"[MONITOR] Agente {agent_id} removido por inatividade")
                     del agents[agent_id]
 
-# Exemplo de função para limpar o terminal
 def clear_terminal():
     os.system('cls' if os.name == 'nt' else 'clear')
 
