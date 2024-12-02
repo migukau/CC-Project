@@ -15,6 +15,7 @@ SEND_INTERVAL = 20  # Intervalo para monitoramento de agentes
 
 # Dict para gerir os agentes
 agents = {}
+#agents = {"PC1" : {"Cpu Usage" : "85%"}}
 agents_lock = threading.Lock()
 
 # Armazenamento de métricas
@@ -36,7 +37,6 @@ tcp_socket.bind((HOST, TCP_PORT))
 shutdown_event = threading.Event()
 
 # Funções de codificação/decodificação
-
 def encode_message(flags, seq, ack, payload):
     payload_bytes = payload.encode() if isinstance(payload, str) else b""
     length = len(payload_bytes)
@@ -261,27 +261,21 @@ def log_alerts_to_csv(agent_id, alert_message):
         })
 
 def clear_terminal():
-    if os.name == 'nt':  # Para sistemas Windows
-        os.system('cls')
-    else:  # Para sistemas POSIX (Linux, macOS)
-        sys.stdout.write('\033c')  # ANSI escape code para limpar o terminal
-        sys.stdout.flush()
+    sys.stdout.write('\033c')  # ANSI escape code para limpar o terminal
+    sys.stdout.flush()
 
 # Mostrar menu de agentes (com questionary)
 def show_agents_menu():
     while not shutdown_event.is_set():
-        # Obter lista de agentes conectados
-        with agents_lock:
-            connected_agents = [
-                f"{agent_id} ({info['address'][0]}:{info['address'][1]})"
-                for agent_id, info in agents.items()
-            ]
-
         # Mostrar a lista de agentes conectados
         clear_terminal()
         print("Agentes conectados ao servidor:\n")
-        print("\n".join(connected_agents) if connected_agents else "Nenhum agente conectado no momento.")
-        print("\n")  # Separação visual
+        if agents == {}:
+            print("Nenhum agente conectado no momento.\n")
+        else:
+            for id, agente in agents.items():
+                print(id, agente)
+                print("\n")
 
         # Mostrar as opções no menu
         option = questionary.select(
