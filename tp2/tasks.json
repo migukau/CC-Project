@@ -12,7 +12,7 @@
         "latency": true
       },
       "alertflow_conditions": {
-        "cpu_usage": 80,
+        "cpu_usage": 3,
         "ram_usage": 90,
         "latency": 100
       }

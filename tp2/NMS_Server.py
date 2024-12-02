@@ -2,7 +2,7 @@ import socket
 import time
 import threading
 import json
-import struct
+import csv
 
 # CONFIG:
 HOST = '10.2.2.1'   # IP do servidor
@@ -32,17 +32,30 @@ tcp_socket.bind((HOST, TCP_PORT))
 
 
 # Funções de codificação/decodificação
+
 def encode_message(flags, seq, ack, payload):
     payload_bytes = payload.encode() if isinstance(payload, str) else b""
     length = len(payload_bytes)
-    header = struct.pack("!BHHH", flags, seq, ack, length)
-    return header + payload_bytes
+    
+    # Header com bitwise shifts
+    header = (flags << 48) | (seq << 32) | (ack << 16) | length
+    header_bytes = header.to_bytes(7, 'big')  # 7 bytes: 1 byte flags + 2 seq + 2 ack + 2 length
+
+    return header_bytes + payload_bytes
+
 
 def decode_message(message):
-    header = message[:7]
-    flags, seq, ack, length = struct.unpack("!BHHH", header)
+    header = int.from_bytes(message[:7], 'big')
+    
+    # Extração dos campos com bitwise shifts
+    flags = (header >> 48) & 0xFF
+    seq = (header >> 32) & 0xFFFF
+    ack = (header >> 16) & 0xFFFF
+    length = header & 0xFFFF
+
     payload = message[7:7 + length]
     return flags, seq, ack, payload.decode() if payload else ""
+
 
 
 # Leitura das tasks do JSON
@@ -135,7 +148,7 @@ def process_metric_message(data, addr):
         with metrics_lock:
             if agent_id not in metrics_data:
                 metrics_data[agent_id] = []
-            metrics_data[agent_id].append({
+            log_metrics_to_csv(agent_id, {
                 "timestamp": timestamp,
                 "metrics": metrics
             })
@@ -159,20 +172,39 @@ def handle_tcp_connection(conn, addr):
     print(f"[TCP] Conexão estabelecida com {addr}")
     try:
         while True:
-            data = conn.recv(4096).decode()
+            data = conn.recv(4096)
             if not data:
                 continue
 
-            if data.startswith("ALERT:"):
-                parts = data.split(":", 2)
-                agent_id = parts[1].strip()
-                alert_message = parts[2]
-                print(f"[ALERT] Recebido de {agent_id}: {alert_message}")
-                # Opcional: Armazenar ou processar alertas
+            flags, seq, ack, payload = decode_message(data)
+
+            # Decodificar payload no formato {AGENT_ID}:{valor}:{timestamp}
+            agent_id, value, alert_timestamp = payload.split(":")
+            alert_type = "Desconhecido"
+
+            # Identificar o tipo de alerta baseado na flag
+            if flags == 0x01:
+                alert_type = "CPU"
+            elif flags == 0x02:
+                alert_type = "RAM"
+            elif flags == 0x03:
+                alert_type = "Latência"
+
+            print(f"[ALERT] Recebido alerta de {alert_type} do agente {agent_id} com valor {value} em {alert_timestamp}")
+
+            # log do alerta
+            log_alerts_to_csv(agent_id, f"{alert_type}:{value}:{alert_timestamp}")
+
+            # Enviar ACK ao cliente
+            ack_message = encode_message(0x01, seq, 0, "")
+            conn.sendall(ack_message)
+
     except Exception as e:
         print(f"[TCP] Erro: {e}")
     finally:
         conn.close()
+
+
 
 # Thread principal do TCP
 def tcp_main_thread():
@@ -198,6 +230,33 @@ def monitor_agents():
                     print(f"[MONITOR] Agente {agent_id} removido por inatividade")
                     del agents[agent_id]
 
+# Funções de log
+def log_metrics_to_csv(agent_id, metrics):
+    with open('metrics_log.csv', 'a', newline='') as csvfile:
+        fieldnames = ['agent_id', 'timestamp', 'metrics']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writerow({'agent_id': agent_id, 'timestamp': metrics["timestamp"], 'metrics': metrics["metrics"]})
+
+def log_alerts_to_csv(agent_id, alert_message):
+    # Extrair o timestamp do alert_message
+    alert_type, value, alert_timestamp = alert_message.split(":")
+    
+    # Concatenar o tipo de alerta e o valor na forma "alert_type:value"
+    alert_combined = f"{alert_type}: {value}"
+
+    # Abrir o arquivo CSV no modo append
+    with open('alerts_log.csv', 'a', newline='') as csvfile:
+        fieldnames = ['agent_id', 'timestamp', 'alert']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        # Escrever o log com o formato desejado
+        writer.writerow({
+            'agent_id': agent_id,
+            'timestamp': alert_timestamp,
+            'alert': alert_combined
+        })
+
+
 # Iniciar o servidor
 def start_server():
     # Load do JSON
@@ -219,3 +278,4 @@ if __name__ == "__main__":
         udp_socket.close()
         tcp_socket.close()
         print("[SERVER] Sockets fechados")
+
