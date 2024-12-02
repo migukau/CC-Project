@@ -6,9 +6,10 @@ import csv
 import questionary
 import os
 import sys
+from datetime import datetime
 
 # CONFIG:
-HOST = '10.0.3.10'   # IP do servidor
+HOST = '10.2.2.1'   # IP do servidor
 UDP_PORT = 24       # Porta UDP
 TCP_PORT = 64       # Porta TCP
 SEND_INTERVAL = 20  # Intervalo para monitoramento de agentes
@@ -22,6 +23,10 @@ agents_lock = threading.Lock()
 metrics_data = {}
 metrics_lock = threading.Lock()
 
+# Armazenamento de alertas
+alerts = {}
+alerts_lock = threading.Lock()
+
 # Armazenamento das tasks
 tasks = {}
 tasks_lock = threading.Lock()
@@ -31,6 +36,7 @@ udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 udp_socket.bind((HOST, UDP_PORT))
 
 tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 tcp_socket.bind((HOST, TCP_PORT))
 
 # Evento de controlo para encerrar o servidor
@@ -77,7 +83,7 @@ def load_tasks():
                     'link_metrics': device.get('link_metrics', {}),
                     'alertflow_conditions': device.get('alertflow_conditions', {})
                 }
-        print("[SERVER] Tarefas carregadas com sucesso.")
+        #print("[SERVER] Tarefas carregadas com sucesso.")
     except FileNotFoundError:
         print("[SERVER] tasks.json não encontrado.")
     except json.JSONDecodeError as e:
@@ -93,14 +99,14 @@ def send_task_to_agent(agent_id, addr):
     if task:
         task_message = json.dumps(task)
         udp_socket.sendto(encode_message(0b10, 0, 0, task_message), addr)
-        print(f"[SERVER] Tarefa enviada para {agent_id}")
+        #print(f"[SERVER] Tarefa enviada para {agent_id}")
     else:
         print(f"[SERVER] Nenhuma tarefa encontrada para {agent_id}")
 
 
 # UDP Handshake e Comunicação
 def udp_listener():
-    print("[UDP] Servidor está à espera de mensagens...")
+    #print("[UDP] Servidor está à espera de mensagens...")
     while True:
         try:
             # Receber mensagem do cliente
@@ -108,7 +114,7 @@ def udp_listener():
             flags, seq, ack, payload = decode_message(data)
 
             if flags == 0b00:  # SYN
-                print(f"[HANDSHAKE] Recebido SYN de {addr}: seq={seq}, payload={payload}")
+                #print(f"[HANDSHAKE] Recebido SYN de {addr}: seq={seq}, payload={payload}")
                 agent_id = payload
 
                 # Atualizar lista de agentes com lock
@@ -118,10 +124,10 @@ def udp_listener():
                 # Enviar SYN-ACK
                 syn_ack_message = encode_message(0b01, seq + 1, seq + 1, "")
                 udp_socket.sendto(syn_ack_message, addr)
-                print(f"[HANDSHAKE] Enviado SYN-ACK para {agent_id}")
+                #print(f"[HANDSHAKE] Enviado SYN-ACK para {agent_id}")
 
             elif flags == 0b01:  # ACK
-                print(f"[HANDSHAKE] ACK recebido de {addr}: seq={seq}, ack={ack}")
+                #print(f"[HANDSHAKE] ACK recebido de {addr}: seq={seq}, ack={ack}")
 
                 # Enviar tarefa correspondente ao agente
                 send_task_to_agent(agent_id, addr)
@@ -142,7 +148,7 @@ def process_metric_message(data, addr):
         metric_message = json.loads(payload)
         agent_id = metric_message["agent_id"]
         metrics = metric_message["metric_data"]
-        timestamp = metric_message["timestamp"]
+        timestamp = datetime.fromtimestamp(metric_message["timestamp"]).strftime("%Y/%m/%d %H:%M:%S")
 
         # Enviar ACK
         ack_message = encode_message(0b01, seq + 1, seq, "")
@@ -152,15 +158,19 @@ def process_metric_message(data, addr):
         with metrics_lock:
             if agent_id not in metrics_data:
                 metrics_data[agent_id] = []
+            metrics_data[agent_id] = ({
+                "timestamp": timestamp,
+                "metrics": metrics
+            })
             log_metrics_to_csv(agent_id, {
                 "timestamp": timestamp,
                 "metrics": metrics
             })
 
-        if flags == 0b10:
-            print(f"[METRIC] Métricas recebidas de {agent_id}: {metrics}")
-        elif flags == 0b11:
-            print(f"[METRIC] Retransmissão recebida de {agent_id}: {metrics}")
+        #if flags == 0b10:
+            #print(f"[METRIC] Métricas recebidas de {agent_id}: {metrics}")
+        #elif flags == 0b11:
+            #print(f"[METRIC] Retransmissão recebida de {agent_id}: {metrics}")
 
         # Atualizar último visto
         with agents_lock:
@@ -173,7 +183,7 @@ def process_metric_message(data, addr):
 
 # TCP Comunicação para alertas
 def handle_tcp_connection(conn, addr):
-    print(f"[TCP] Conexão estabelecida com {addr}")
+    #print(f"[TCP] Conexão estabelecida com {addr}")
     try:
         while True:
             data = conn.recv(4096)
@@ -185,6 +195,11 @@ def handle_tcp_connection(conn, addr):
             # Decodificar payload no formato {AGENT_ID}:{valor}:{timestamp}
             agent_id, value, alert_timestamp = payload.split(":")
             alert_type = "Desconhecido"
+            try:
+                alert_timestamp = int(alert_timestamp)  # Converte primeiro para float e depois para int
+                formatted_time = datetime.fromtimestamp(alert_timestamp).strftime("%Y/%m/%d %H:%M:%S")
+            except ValueError:
+                formatted_time = alert_timestamp  # Caso falhe, usa o timestamp original (não formatado)
 
             # Identificar o tipo de alerta baseado na flag
             if flags == 0x01:
@@ -194,10 +209,15 @@ def handle_tcp_connection(conn, addr):
             elif flags == 0x03:
                 alert_type = "Latência"
 
-            print(f"[ALERT] Recebido alerta de {alert_type} do agente {agent_id} com valor {value} em {alert_timestamp}")
+            #print(f"[ALERT] Recebido alerta de {alert_type} do agente {agent_id} com valor {value} em {alert_timestamp}")
 
             # log do alerta
-            log_alerts_to_csv(agent_id, f"{alert_type}:{value}:{alert_timestamp}")
+            log_alerts_to_csv(agent_id, f"{formatted_time};{alert_type};{value}")
+            
+            with alerts_lock:
+                if agent_id not in alerts:
+                    alerts[agent_id] = []
+                alerts[agent_id].append(f"{formatted_time}; {alert_type}: {value}")
 
             # Enviar ACK ao cliente
             ack_message = encode_message(0x01, seq, 0, "")
@@ -213,14 +233,13 @@ def handle_tcp_connection(conn, addr):
 # Thread principal do TCP
 def tcp_main_thread():
     tcp_socket.listen()
-    print("[TCP] Servidor está à espera de conexões...")
+    #print("[TCP] Servidor está à espera de conexões...")
     while True:
         try:
             conn, addr = tcp_socket.accept()
-            print(f"[TCP] Conexão recebida de {addr}")
             threading.Thread(target=handle_tcp_connection, args=(conn, addr), daemon=True).start()
         except Exception as e:
-            print(f"[TCP] Erro no thread principal: {e}")
+            #print(f"[TCP] Erro no thread principal: {e}")
             break
 
 # Monitorar inatividade dos agentes
@@ -231,19 +250,21 @@ def monitor_agents():
         with agents_lock:
             for agent_id, info in list(agents.items()):
                 if now - info["last_seen"] > 2 * SEND_INTERVAL + 2:
-                    print(f"[MONITOR] Agente {agent_id} removido por inatividade")
+                    #print(f"[MONITOR] Agente {agent_id} removido por inatividade")
                     del agents[agent_id]
+                    del metrics_data[agent_id]
 
 # Funções de log
 def log_metrics_to_csv(agent_id, metrics):
-    with open('metrics_log.csv', 'a', newline='') as csvfile:
-        fieldnames = ['agent_id', 'timestamp', 'metrics']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writerow({'agent_id': agent_id, 'timestamp': metrics["timestamp"], 'metrics': metrics["metrics"]})
+    if metrics_data[agent_id]:
+        with open('metrics_log.csv', 'a', newline='') as csvfile:
+            fieldnames = ['agent_id', 'timestamp', 'metrics']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writerow({'agent_id': agent_id, 'timestamp': metrics["timestamp"], 'metrics': metrics["metrics"]})
 
 def log_alerts_to_csv(agent_id, alert_message):
     # Extrair o timestamp do alert_message
-    alert_type, value, alert_timestamp = alert_message.split(":")
+    alert_timestamp, alert_type, value  = alert_message.split(";")
     
     # Concatenar o tipo de alerta e o valor na forma "alert_type:value"
     alert_combined = f"{alert_type}: {value}"
@@ -270,27 +291,53 @@ def show_agents_menu():
         # Mostrar a lista de agentes conectados
         clear_terminal()
         print("Agentes conectados ao servidor:\n")
-        if agents == {}:
+        if metrics_data == {}:
             print("Nenhum agente conectado no momento.\n")
         else:
-            for id, agente in agents.items():
-                print(id, agente)
-                print("\n")
+            for agente_id,metricas in metrics_data.items():
+                print(f"{agente_id}: {metricas['metrics']}\n")
 
         # Mostrar as opções no menu
         option = questionary.select(
             "Escolha uma opção:",
-            choices=["Atualizar lista de agentes", "Sair"]
+            choices=["Atualizar lista de agentes", "Mostrar Alertas","Sair"]
         ).ask()
 
         if option == "Atualizar lista de agentes":
             # Atualiza o menu
             continue
+        elif option == "Mostrar Alertas":
+            show_alerts_menu()
+
         elif option == "Sair":
             clear_terminal()
             print("Encerrando menu de agentes...")
             shutdown_event.set()
             break
+
+def show_alerts_menu():
+    while not shutdown_event.is_set():
+        clear_terminal()
+        print("Alertas recebido:\n")
+
+        if alerts == {}:
+            print("Nenhum alerta.\n")
+        else:
+            for agente_id in alerts:
+                print(f"{agente_id}:\n")
+                for alert in alerts[agente_id]:
+                    print(f"    {alert}\n")
+  
+        # Mostrar as opções no menu
+        option = questionary.select(
+            "Escolha uma opção:",
+               choices=["Atualizar lista de alertas", "Voltar"]
+        ).ask()
+    
+        if option == "Atualizar lista de alertas":
+            continue
+        elif option == "Voltar":
+            show_agents_menu()
 
 # Iniciar o servidor
 def start_server():
