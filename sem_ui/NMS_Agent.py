@@ -90,7 +90,7 @@ def udp_handshake():
 # Lista global de métricas
 metric_list = []
 
-# Função para coletar e verificar métricas
+# Coleta e verificação de métricas
 def collect_and_check_metrics():
     """Coleta métricas e verifica thresholds para alertas."""
     global metric_list  # Usar a lista global
@@ -107,9 +107,6 @@ def collect_and_check_metrics():
         if "cpu_usage" in alert_conditions and cpu_usage > alert_conditions["cpu_usage"]:
             if not alerts_sent["cpu_usage"]:
                 send_alert("cpu_usage", cpu_usage)
-                alerts_sent["cpu_usage"] = True
-        elif "cpu_usage" in alert_conditions and cpu_usage < alert_conditions["cpu_usage"]:
-            alerts_sent["cpu_usage"] = False
 
     # RAM Usage
     if "ram_usage" in device_metrics:
@@ -119,25 +116,19 @@ def collect_and_check_metrics():
         if "ram_usage" in alert_conditions and ram_usage > alert_conditions["ram_usage"]:
             if not alerts_sent["ram_usage"]:
                 send_alert("ram_usage", ram_usage)
-                alerts_sent["ram_usage"] = True
-        elif "ram_usage" in alert_conditions and ram_usage < alert_conditions["ram_usage"]:
-            alerts_sent["ram_usage"] = False
 
     # Latency (Ping to another agent)
     if "latency" in link_metrics:
         ping_target = task.get('ping_target')
-        if ping_target is None:
-            print("FODASSE O PING È NONE")
-            ping_target = "10.3.3.3"  # Obtém o IP do agente destino da task
+        #if ping_target is None:
+        #    print("[ERROR] 'ping_target' não encontrado na task. Usando IP padrão.")
+        #    ping_target = "10.3.3.3"  # IP padrão, se não encontrado na task
         latency = get_ping(ping_target)  # Faz o ping para o IP do outro agente
         metric_data["latency"] = latency
         metric_list.append({"latency": latency})  # Adiciona à lista de métricas
         if "latency" in alert_conditions and latency != -1 and latency > alert_conditions["latency"]:
             if not alerts_sent["latency"]:
                 send_alert("latency", latency)
-                alerts_sent["latency"] = True
-        elif "latency" in alert_conditions and latency != -1 and latency < alert_conditions["latency"]:
-            alerts_sent["latency"] = False
         elif latency == -1:
             print(f"[ALERT] Não foi possível fazer ping para {ping_target}, retornando latência -1")
 
@@ -201,6 +192,9 @@ def send_metrics():
         if task:
             # Média das métricas dos ultimos n segundos passados
             metric_data = mean_metrics()
+
+            if not metric_data:
+                metric_data = collect_and_check_metrics()
 
             # Cria payload e envia métricas
             payload = json.dumps({
@@ -323,7 +317,7 @@ def tcp_connect():
     except Exception as e:
         print(f"[TCP] Erro ao conectar: {e}")
 
-# Receber tarefa do servidor
+
 # Receber tarefa do servidor
 def receive_task():
     global task, alert_conditions

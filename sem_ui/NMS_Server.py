@@ -57,12 +57,12 @@ def decode_message(message):
     return flags, seq, ack, payload.decode() if payload else ""
 
 
-
 # Leitura das tasks do JSON
 def load_tasks():
     try:
         with open('tasks.json', 'r') as file:
             data = json.load(file)
+        
         with tasks_lock:
             for device in data['devices']:
                 agent_id = device['device_id']
@@ -71,8 +71,10 @@ def load_tasks():
                     'frequency': data['frequency'],
                     'device_metrics': device.get('device_metrics', {}),
                     'link_metrics': device.get('link_metrics', {}),
-                    'alertflow_conditions': device.get('alertflow_conditions', {})
+                    'alertflow_conditions': device.get('alertflow_conditions', {}),
+                    'ping_target': device.get('ping_target', '')  # Incluindo o ping_target aqui
                 }
+        
         print("[SERVER] Tarefas carregadas com sucesso.")
     except FileNotFoundError:
         print("[SERVER] tasks.json não encontrado.")
@@ -82,7 +84,6 @@ def load_tasks():
         print(f"[SERVER] Erro ao carregar tarefas: {e}")
 
 
-# Envia as tasks ao agente correspondente
 # Função para enviar a task para o agente
 def send_task_to_agent(agent_id, addr):
     with tasks_lock:
