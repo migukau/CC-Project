@@ -1,257 +1,280 @@
 import socket
+import time
 import threading
-import json 
+import json
+import csv
 
-def udp_server():
-    server_address = ('0.0.0.0', 12345)  # Porta para métricas
-    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp_socket.bind(server_address)
-    print("NMS_Server (UDP) escutando por métricas...")
+# CONFIG:
+HOST = '10.2.2.1'   # IP do servidor
+UDP_PORT = 24       # Porta UDP
+TCP_PORT = 64       # Porta TCP
+SEND_INTERVAL = 20  # Intervalo para monitoramento de agentes
 
-    while True:
-        data, address = udp_socket.recvfrom(4096)
-        print(f"[Métrica Recebida] {data.decode()} de {address}")
+# Dict para gerir os agentes
+agents = {}
+agents_lock = threading.Lock()
 
-def tcp_server():
-    server_address = ('0.0.0.0', 54321)  # Porta para alertas
-    tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    tcp_socket.bind(server_address)
-    tcp_socket.listen(5)
-    print("NMS_Server (TCP) escutando por alertas...")
+# Armazenamento de métricas
+metrics_data = {}
+metrics_lock = threading.Lock()
 
-    while True:
-        connection, client_address = tcp_socket.accept()
-        try:
-            print(f"[Conexão TCP] {client_address} conectou-se")
-            while True:
-                data = connection.recv(4096)
-                if not data:
-                    break
-                print(f"[Alerta Recebido] {data.decode()}")
-        finally:
-            connection.close()
+# Armazenamento das tasks
+tasks = {}
+tasks_lock = threading.Lock()
 
-# Função para carregar e interpretar o arquivo JSON
-def load_task_file(file_path):
-    try:
-        with open(file_path, 'r') as file:
-            data = json.load(file)
-            return data
-    except FileNotFoundError:
-        print(f"Arquivo JSON {file_path} não encontrado.")
-        return None
-    except json.JSONDecodeError as e:
-        print(f"Erro ao decodificar o arquivo JSON: {e}")
-        return None
+# SOCKETS:
+udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp_socket.bind((HOST, UDP_PORT))
 
-# Função para atribuir tarefas aos agentes com base no arquivo JSON
-def assign_tasks(task_data):
-    if not task_data:
-        return
+tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+tcp_socket.bind((HOST, TCP_PORT))
 
-    for task in task_data['tasks']:
-        agent = task['agent']
-        metric = task['metric']
-        limit = task['limit']
-        print(f"Atribuindo tarefa ao agente {agent}: Monitorar {metric} com limite de {limit}%")
-        send_task_to_agent(agent, metric, limit)
 
-# Função para enviar tarefas ao agente (usando UDP como exemplo)
-def send_task_to_agent(agent_ip, metric, limit):
-    message = f"Tarefa: Monitorar {metric}, Limite: {limit}%"
-    server_address = (agent_ip, 12345)  # Porta do agente UDP (ajustar conforme necessário)
+
+# Funções de codificação/decodificação
+
+def encode_message(flags, seq, ack, payload):
+    payload_bytes = payload.encode() if isinstance(payload, str) else b""
+    length = len(payload_bytes)
     
-    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # Header com bitwise shifts
+    header = (flags << 48) | (seq << 32) | (ack << 16) | length
+    header_bytes = header.to_bytes(7, 'big')  # 7 bytes: 1 byte flags + 2 seq + 2 ack + 2 length
+
+    return header_bytes + payload_bytes
+
+
+def decode_message(message):
+    header = int.from_bytes(message[:7], 'big')
+    
+    # Extração dos campos com bitwise shifts
+    flags = (header >> 48) & 0xFF
+    seq = (header >> 32) & 0xFFFF
+    ack = (header >> 16) & 0xFFFF
+    length = header & 0xFFFF
+
+    payload = message[7:7 + length]
+    return flags, seq, ack, payload.decode() if payload else ""
+
+
+
+# Leitura das tasks do JSON
+def load_tasks():
     try:
-        udp_socket.sendto(message.encode(), server_address)
-        print(f"[Tarefa Enviada] {message} para o agente {agent_ip}")
+        with open('tasks.json', 'r') as file:
+            data = json.load(file)
+        with tasks_lock:
+            for device in data['devices']:
+                agent_id = device['device_id']
+                tasks[agent_id] = {
+                    'task_id': data['task_id'],
+                    'frequency': data['frequency'],
+                    'device_metrics': device.get('device_metrics', {}),
+                    'link_metrics': device.get('link_metrics', {}),
+                    'alertflow_conditions': device.get('alertflow_conditions', {})
+                }
+        print("[SERVER] Tarefas carregadas com sucesso.")
+    except FileNotFoundError:
+        print("[SERVER] tasks.json não encontrado.")
+    except json.JSONDecodeError as e:
+        print(f"[SERVER] Erro ao decodificar tasks.json: {e}")
     except Exception as e:
-        print(f"Erro ao enviar tarefa para o agente {agent_ip}: {e}")
+        print(f"[SERVER] Erro ao carregar tarefas: {e}")
+
+
+# Envia as tasks ao agente correspondente
+def send_task_to_agent(agent_id, addr):
+    with tasks_lock:
+        task = tasks.get(agent_id)
+    if task:
+        task_message = json.dumps(task)
+        udp_socket.sendto(encode_message(0b10, 0, 0, task_message), addr)
+        print(f"[SERVER] Tarefa enviada para {agent_id}")
+    else:
+        print(f"[SERVER] Nenhuma tarefa encontrada para {agent_id}")
+
+
+# UDP Handshake e Comunicação
+def udp_listener():
+    print("[UDP] Servidor está à espera de mensagens...")
+    while True:
+        try:
+            # Receber mensagem do cliente
+            data, addr = udp_socket.recvfrom(4096)
+            flags, seq, ack, payload = decode_message(data)
+
+            if flags == 0b00:  # SYN
+                print(f"[HANDSHAKE] Recebido SYN de {addr}: seq={seq}, payload={payload}")
+                agent_id = payload
+
+                # Atualizar lista de agentes com lock
+                with agents_lock:
+                    agents[agent_id] = {"address": addr, "last_seen": time.time()}
+                
+                # Enviar SYN-ACK
+                syn_ack_message = encode_message(0b01, seq + 1, seq + 1, "")
+                udp_socket.sendto(syn_ack_message, addr)
+                print(f"[HANDSHAKE] Enviado SYN-ACK para {agent_id}")
+
+            elif flags == 0b01:  # ACK
+                print(f"[HANDSHAKE] ACK recebido de {addr}: seq={seq}, ack={ack}")
+
+                # Enviar tarefa correspondente ao agente
+                send_task_to_agent(agent_id, addr)
+
+            elif flags == 0b10 or flags == 0b11:  # DATA ou Retransmissão
+                # Processar métricas recebidas
+                process_metric_message(data, addr)
+
+        except Exception as e:
+            print(f"[UDP] Erro: {e}")
+
+
+
+# Processar métricas recebidas e enviar ACK
+def process_metric_message(data, addr):
+    try:
+        flags, seq, ack, payload = decode_message(data)
+        metric_message = json.loads(payload)
+        agent_id = metric_message["agent_id"]
+        metrics = metric_message["metric_data"]
+        timestamp = metric_message["timestamp"]
+
+        # Enviar ACK
+        ack_message = encode_message(0b01, seq + 1, seq, "")
+        udp_socket.sendto(ack_message, addr)
+
+        # Armazenar métricas
+        with metrics_lock:
+            if agent_id not in metrics_data:
+                metrics_data[agent_id] = []
+            log_metrics_to_csv(agent_id, {
+                "timestamp": timestamp,
+                "metrics": metrics
+            })
+
+        if flags == 0b10:
+            print(f"[METRIC] Métricas recebidas de {agent_id}: {metrics}")
+        elif flags == 0b11:
+            print(f"[METRIC] Retransmissão recebida de {agent_id}: {metrics}")
+
+        # Atualizar último visto
+        with agents_lock:
+            if agent_id in agents:
+                agents[agent_id]["last_seen"] = time.time()
+
+    except Exception as e:
+        print(f"[METRIC] Erro ao processar métricas: {e}")
+
+
+# TCP Comunicação para alertas
+def handle_tcp_connection(conn, addr):
+    print(f"[TCP] Conexão estabelecida com {addr}")
+    try:
+        while True:
+            data = conn.recv(4096)
+            if not data:
+                continue
+
+            flags, seq, ack, payload = decode_message(data)
+
+            # Decodificar payload no formato {AGENT_ID}:{valor}:{timestamp}
+            agent_id, value, alert_timestamp = payload.split(":")
+            alert_type = "Desconhecido"
+
+            # Identificar o tipo de alerta baseado na flag
+            if flags == 0x01:
+                alert_type = "CPU"
+            elif flags == 0x02:
+                alert_type = "RAM"
+            elif flags == 0x03:
+                alert_type = "Latência"
+
+            print(f"[ALERT] Recebido alerta de {alert_type} do agente {agent_id} com valor {value} em {alert_timestamp}")
+
+            # log do alerta
+            log_alerts_to_csv(agent_id, f"{alert_type}:{value}:{alert_timestamp}")
+
+            # Enviar ACK ao cliente
+            ack_message = encode_message(0x01, seq, 0, "")
+            conn.sendall(ack_message)
+
+    except Exception as e:
+        print(f"[TCP] Erro: {e}")
+    finally:
+        conn.close()
+
+
+
+# Thread principal do TCP
+def tcp_main_thread():
+    tcp_socket.listen()
+    print("[TCP] Servidor está à espera de conexões...")
+    while True:
+        try:
+            conn, addr = tcp_socket.accept()
+            print(f"[TCP] Conexão recebida de {addr}")
+            threading.Thread(target=handle_tcp_connection, args=(conn, addr), daemon=True).start()
+        except Exception as e:
+            print(f"[TCP] Erro no thread principal: {e}")
+            break
+
+# Monitorar inatividade dos agentes
+def monitor_agents():
+    while True:
+        time.sleep(5)
+        now = time.time()
+        with agents_lock:
+            for agent_id, info in list(agents.items()):
+                if now - info["last_seen"] > 2 * SEND_INTERVAL + 2:
+                    print(f"[MONITOR] Agente {agent_id} removido por inatividade")
+                    del agents[agent_id]
+
+# Funções de log
+def log_metrics_to_csv(agent_id, metrics):
+    with open('metrics_log.csv', 'a', newline='') as csvfile:
+        fieldnames = ['agent_id', 'timestamp', 'metrics']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writerow({'agent_id': agent_id, 'timestamp': metrics["timestamp"], 'metrics': metrics["metrics"]})
+
+def log_alerts_to_csv(agent_id, alert_message):
+    # Extrair o timestamp do alert_message
+    alert_type, value, alert_timestamp = alert_message.split(":")
+    
+    # Concatenar o tipo de alerta e o valor na forma "alert_type:value"
+    alert_combined = f"{alert_type}: {value}"
+
+    # Abrir o arquivo CSV no modo append
+    with open('alerts_log.csv', 'a', newline='') as csvfile:
+        fieldnames = ['agent_id', 'timestamp', 'alert']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        # Escrever o log com o formato desejado
+        writer.writerow({
+            'agent_id': agent_id,
+            'timestamp': alert_timestamp,
+            'alert': alert_combined
+        })
+
+
+# Iniciar o servidor
+def start_server():
+    # Load do JSON
+    load_tasks()
+
+    # Iniciar threads para UDP e TCP
+    threading.Thread(target=udp_listener, daemon=True).start()
+    threading.Thread(target=tcp_main_thread, daemon=True).start()
+
+    # Monitorar agentes
+    monitor_agents()
+
+if __name__ == "__main__":
+    try:
+        start_server()
+    except KeyboardInterrupt:
+        print("[SERVER] Servidor interrompido manualmente.")
     finally:
         udp_socket.close()
-
-# Função para carregar e interpretar o arquivo JSON
-def parse_task_file(file_path):
-    try:
-        # Carrega o conteúdo do arquivo JSON
-        with open(file_path, 'r') as file:
-            data = json.load(file)
-    except FileNotFoundError:
-        print(f"Erro: Arquivo {file_path} não encontrado.")
-        return None
-    except json.JSONDecodeError:
-        print(f"Erro: O arquivo {file_path} não contém um JSON válido.")
-        return None
-    except Exception as e:
-        print(f"Erro ao ler o arquivo: {str(e)}")
-        return None
-
-    # Validação de campos obrigatórios
-    required_fields = ["task_id", "frequency", "devices"]
-    for field in required_fields:
-        if field not in data:
-            print(f"Erro: Campo obrigatório '{field}' não encontrado no JSON.")
-            return None
-    
-    # Extrai informações principais
-    task_id = data.get("task_id")
-    frequency = data.get("frequency")
-    
-    # Validação de frequency
-    if not isinstance(frequency, (int, float)) or frequency <= 0:
-        print("Erro: 'frequency' deve ser um número positivo.")
-        return None
-    
-    print(f"Task ID: {task_id}")
-    print(f"Frequency: {frequency} seconds")
-    
-    # Itera pelos dispositivos listados
-    devices = data.get("devices", [])
-    if not devices:
-        print("Aviso: Nenhum dispositivo encontrado no arquivo de tarefas.")
-        return None
-    
-    for device in devices:
-        # Validação de campos obrigatórios do dispositivo
-        if "device_id" not in device:
-            print("Erro: Dispositivo sem 'device_id'")
-            continue
-            
-        device_id = device.get("device_id")
-        device_metrics = device.get("device_metrics", {})
-        link_metrics = device.get("link_metrics", {})
-        alertflow_conditions = device.get("alertflow_conditions", {})
-        
-        print(f"\nDevice ID: {device_id}")
-        
-        # Device metrics
-        cpu_usage = device_metrics.get("cpu_usage")
-        ram_usage = device_metrics.get("ram_usage")
-        
-        # Validação de métricas
-        if cpu_usage is not None and not isinstance(cpu_usage, bool):
-            print(f"Aviso: CPU usage para dispositivo {device_id} deve ser boolean")
-        if ram_usage is not None and not isinstance(ram_usage, bool):
-            print(f"Aviso: RAM usage para dispositivo {device_id} deve ser boolean")
-        
-        print(f"  CPU Usage Monitoring: {cpu_usage}")
-        print(f"  RAM Usage Monitoring: {ram_usage}")
-        
-        # Link metrics
-        for metric_name, metric in link_metrics.items():
-            print(f"  Link Metric: {metric_name.capitalize()}")
-            if metric_name == "bandwidth":
-                required_bandwidth_fields = ["iperf_role", "server_ip", "duration", "transport", "frequency"]
-                if not all(field in metric for field in required_bandwidth_fields):
-                    print(f"Aviso: Campos obrigatórios ausentes na métrica bandwidth para {device_id}")
-                    continue
-                    
-                iperf_role = metric.get("iperf_role")
-                server_ip = metric.get("server_ip")
-                duration = metric.get("duration")
-                transport = metric.get("transport")
-                link_frequency = metric.get("frequency")
-                
-                # Validação de valores
-                if duration <= 0:
-                    print(f"Aviso: duration deve ser positivo para {device_id}")
-                if transport not in ["tcp", "udp"]:
-                    print(f"Aviso: transport deve ser 'tcp' ou 'udp' para {device_id}")
-                if link_frequency <= 0:
-                    print(f"Aviso: frequency deve ser positivo para {device_id}")
-                
-                print(f"    - Role: {iperf_role}")
-                print(f"    - Server IP: {server_ip}")
-                print(f"    - Duration: {duration} seconds")
-                print(f"    - Transport: {transport}")
-                print(f"    - Frequency: {link_frequency} seconds")
-                
-            elif metric_name in ["jitter", "packet_loss"]:
-                required_fields = ["enabled", "iperf_role", "server_ip", "frequency"]
-                if not all(field in metric for field in required_fields):
-                    print(f"Aviso: Campos obrigatórios ausentes na métrica {metric_name} para {device_id}")
-                    continue
-                    
-                enabled = metric.get("enabled")
-                iperf_role = metric.get("iperf_role")
-                server_ip = metric.get("server_ip")
-                link_frequency = metric.get("frequency")
-                
-                # Validação de valores
-                if not isinstance(enabled, bool):
-                    print(f"Aviso: enabled deve ser boolean para {metric_name} em {device_id}")
-                if link_frequency <= 0:
-                    print(f"Aviso: frequency deve ser positivo para {metric_name} em {device_id}")
-                
-                print(f"    - Enabled: {enabled}")
-                print(f"    - Role: {iperf_role}")
-                print(f"    - Server IP: {server_ip}")
-                print(f"    - Frequency: {link_frequency} seconds")
-                
-            elif metric_name == "latency":
-                required_fields = ["ping_destination", "count", "frequency"]
-                if not all(field in metric for field in required_fields):
-                    print(f"Aviso: Campos obrigatórios ausentes na métrica latency para {device_id}")
-                    continue
-                    
-                ping_destination = metric.get("ping_destination")
-                count = metric.get("count")
-                link_frequency = metric.get("frequency")
-                
-                # Validação de valores
-                if count <= 0:
-                    print(f"Aviso: count deve ser positivo para latency em {device_id}")
-                if link_frequency <= 0:
-                    print(f"Aviso: frequency deve ser positivo para latency em {device_id}")
-                
-                print(f"    - Ping Destination: {ping_destination}")
-                print(f"    - Count: {count}")
-                print(f"    - Frequency: {link_frequency} seconds")
-        
-        # Alertflow conditions
-        print("  Alertflow Conditions:")
-        cpu_alert = alertflow_conditions.get("cpu_usage")
-        ram_alert = alertflow_conditions.get("ram_usage")
-        interface_alerts = alertflow_conditions.get("interface_stats", {})
-        packet_loss_alert = alertflow_conditions.get("packet_loss")
-        jitter_alert = alertflow_conditions.get("jitter")
-        
-        # Validação de alertas
-        if cpu_alert is not None and (not isinstance(cpu_alert, (int, float)) or cpu_alert < 0 or cpu_alert > 100):
-            print(f"Aviso: CPU alert deve ser uma porcentagem válida (0-100) para {device_id}")
-        if ram_alert is not None and (not isinstance(ram_alert, (int, float)) or ram_alert < 0 or ram_alert > 100):
-            print(f"Aviso: RAM alert deve ser uma porcentagem válida (0-100) para {device_id}")
-        if packet_loss_alert is not None and (not isinstance(packet_loss_alert, (int, float)) or packet_loss_alert < 0 or packet_loss_alert > 100):
-            print(f"Aviso: Packet loss alert deve ser uma porcentagem válida (0-100) para {device_id}")
-        if jitter_alert is not None and (not isinstance(jitter_alert, (int, float)) or jitter_alert < 0):
-            print(f"Aviso: Jitter alert deve ser um valor positivo para {device_id}")
-        
-        print(f"    - CPU Usage Alert if above: {cpu_alert}%")
-        print(f"    - RAM Usage Alert if above: {ram_alert}%")
-        for interface, threshold in interface_alerts.items():
-            if not isinstance(threshold, (int, float)) or threshold < 0:
-                print(f"Aviso: Interface alert threshold deve ser um valor positivo para {interface} em {device_id}")
-            print(f"    - {interface} Bandwidth Alert if above: {threshold} Mbps")
-        print(f"    - Packet Loss Alert if above: {packet_loss_alert}%")
-        print(f"    - Jitter Alert if above: {jitter_alert} ms")
-    
-    print("\nParsing completed.")
-    return data
-
-# Executa as duas funções de servidor (UDP e TCP) em threads separadas
-# Integração do módulo de JSON com o servidor
-if __name__ == "__main__":
-    # Carregar e atribuir tarefas aos agentes
-    json_file = "config.json"
-    task_data = load_task_file(json_file)
-    assign_tasks(task_data)
-
-    udp_thread = threading.Thread(target=udp_server)
-    tcp_thread = threading.Thread(target=tcp_server)
-
-    parse_task_file(json_file)
-    udp_thread.start()
-    tcp_thread.start()
-
-    udp_thread.join()
-    tcp_thread.join()
+        tcp_socket.close()
+        print("[SERVER] Sockets fechados")
