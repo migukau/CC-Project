@@ -7,7 +7,7 @@ import threading
 import json
 
 # CONFIG:
-HOST = '10.2.2.1'   # IP do SERVER
+HOST = '10.0.3.10'   # IP do SERVER
 UDP_PORT = 24       # Porta UDP do SERVER
 TCP_PORT = 64       # Porta TCP do SERVER
 
@@ -210,7 +210,7 @@ def start_agent():
         receive_task()
 
         # Conectar via TCP para envio de alertas
-        tcp_connect()
+        tcp_connect() 
 
         # Iniciar thread para envio de métricas
         threading.Thread(target=send_metrics, daemon=True).start()
