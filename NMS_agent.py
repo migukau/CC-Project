@@ -8,7 +8,7 @@ import struct
 import subprocess
 
 # CONFIG:
-HOST = '10.2.2.1'   # IP do SERVER
+HOST = '10.0.3.10'   # IP do SERVER
 UDP_PORT = 24       # Porta UDP do SERVER
 TCP_PORT = 64       # Porta TCP do SERVER
 
@@ -22,6 +22,7 @@ alerts_sent = {"cpu_usage": False, "ram_usage": False, "latency": False}
 sequence_number = 0
 ack_received = threading.Event()
 udp_lock = threading.Lock()
+metric_list_lock = threading.Lock()
 
 # SOCKETS:
 udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -91,81 +92,113 @@ def udp_handshake():
 metric_list = []
 
 # Função para coletar e verificar métricas
-def collect_and_check_metrics():
-    global metric_list  # Usar a lista global
+# Function to only collect metrics for reporting
+def collect_metrics(store=True):
+    global metric_list
 
+    global metric_data
     metric_data = {}
     device_metrics = task.get('device_metrics', {})
     link_metrics = task.get('link_metrics', {})
 
-    # CPU Usage
+    # Collect CPU Usage
     if "cpu_usage" in device_metrics:
-        cpu_usage = psutil.cpu_percent(interval=1)
+        cpu_usage = psutil.cpu_percent(interval=0.5)
         metric_data["cpu_usage"] = cpu_usage
-        metric_list.append({"cpu_usage": cpu_usage})  # Adiciona à lista de métricas
-        if "cpu_usage" in alert_conditions and cpu_usage > alert_conditions["cpu_usage"]:
-            if not alerts_sent["cpu_usage"]:
-                send_alert("cpu_usage", cpu_usage)
-                alerts_sent["cpu_usage"] = True
-        elif "cpu_usage" in alert_conditions and cpu_usage < alert_conditions["cpu_usage"]:
-            alerts_sent["cpu_usage"] = False
+        if store:
+            metric_list.append({"cpu_usage": cpu_usage})
 
-    # RAM Usage
+    # Collect RAM Usage
     if "ram_usage" in device_metrics:
         ram_usage = psutil.virtual_memory().percent
         metric_data["ram_usage"] = ram_usage
-        metric_list.append({"ram_usage": ram_usage})  # Adiciona à lista de métricas
-        if "ram_usage" in alert_conditions and ram_usage > alert_conditions["ram_usage"]:
-            if not alerts_sent["ram_usage"]:
-                send_alert("ram_usage", ram_usage)
-                alerts_sent["ram_usage"] = True
-        elif "ram_usage" in alert_conditions and ram_usage < alert_conditions["ram_usage"]:
-            alerts_sent["ram_usage"] = False
+        if store:
+            metric_list.append({"ram_usage": ram_usage})
 
-    # Latency
+    # Collect Latency
     if "latency" in link_metrics:
-        latency = get_ping()
+        ping_target = task.get('ping_target', HOST)
+        latency = get_ping(ping_target)
         metric_data["latency"] = latency
-        metric_list.append({"latency": latency})  # Adiciona à lista de métricas
-        if "latency" in alert_conditions and latency and latency > alert_conditions["latency"]:
-            if not alerts_sent["latency"]:
-                send_alert("latency", latency)
-                alerts_sent["latency"] = True
-        elif "latency" in alert_conditions and latency and latency < alert_conditions["latency"]:
-            alerts_sent["latency"] = False
+        if store:
+            metric_list.append({"latency": latency})
 
     return metric_data
+
+
+def check_for_alerts():
+    global alerts_sent
+
+    device_metrics = task.get('device_metrics', {})
+    link_metrics = task.get('link_metrics', {})
+    
+    # CPU Usage
+    if "cpu_usage" in device_metrics and device_metrics["cpu_usage"]:
+        if "cpu_usage" in alert_conditions and "cpu_usage" in metric_data and metric_data["cpu_usage"] > alert_conditions["cpu_usage"]:
+            if not alerts_sent["cpu_usage"]:
+                send_alert("cpu_usage", metric_data["cpu_usage"])
+
+    # RAM Usage
+    if "ram_usage" in device_metrics:
+        if "ram_usage" in alert_conditions and "ram_usage" in device_metrics and device_metrics["ram_usage"] > alert_conditions["ram_usage"]:
+            if not alerts_sent["ram_usage"]:
+                send_alert("ram_usage", device_metrics["ram_usage"])
+
+    # Latency (Ping to another agent)
+    if "latency" in link_metrics:
+        ping_target = task.get('ping_target', HOST)  # Default ping target to server if not set
+        if  "latency" in alert_conditions and "latency" in metric_data and metric_data["latency"] > alert_conditions["latency"]:
+            if not alerts_sent["latency"]:
+                send_alert("latency", metric_data["latency"])
+ 
+
 
 # Função que calcula a média das métricas
 def mean_metrics():
     global metric_list  # Usar a lista global
 
-    # Dicionário para armazenar as somas das métricas
+    if not metric_list:
+        return []
+
+    # Dicionário para armazenar as somas das métricas e contagem dos valores válidos
     summed_metrics = {"cpu_usage": 0, "ram_usage": 0, "latency": 0}
-    count = 0
+    count = {"cpu_usage": 0, "ram_usage": 0, "latency": 0}
 
     # Calcular a soma das métricas
     for metrics in metric_list:
         for key, value in metrics.items():
             if key in summed_metrics:
-                summed_metrics[key] += value
-        count += 1
+                # Se o valor da métrica for negativo, atribuímos -1
+                if value < 0:
+                    summed_metrics[key] = -1
+                    count[key] = 1  # Para garantir que será marcado como -1
+                else:
+                    summed_metrics[key] += value
+                    count[key] += 1
 
-    # Calcular a média das métricas
-    if count > 0:
-        mean_data = {key: summed_metrics[key] / count for key in summed_metrics}
-    else:
-        mean_data = {}
+    # Calcular a média das métricas, considerando que métricas negativas resultam em -1
+    mean_data = {}
+    for key in summed_metrics:
+        if count[key] > 0:
+            # Se houver métricas válidas para a chave, calcular a média
+            mean_data[key] = summed_metrics[key] / count[key] if summed_metrics[key] != -1 else -1
+        else:
+            # Se não houver métricas válidas, definimos como -1
+            mean_data[key] = -1
 
+    # Limpar a lista de métricas após o cálculo da média
     metric_list.clear()
+
+    print(f'{metric_list}')
     return mean_data
 
 # Função para monitorar alertas
 def monitor_alerts():
     while True:
         if task:
-            collect_and_check_metrics()
-        time.sleep(5)  # Frequência de monitoramento
+            check_for_alerts()
+        time.sleep(5)  
+
 
 
 
@@ -180,6 +213,9 @@ def send_metrics():
         if task:
             # Média das métricas dos ultimos n segundos passados
             metric_data = mean_metrics()
+            # /!\ 
+            if not metric_data:
+                metric_data = collect_metrics(False)
 
             # Cria payload e envia métricas
             payload = json.dumps({
@@ -204,7 +240,7 @@ def send_metrics():
                     udp_socket.settimeout(timeout)
                     data, addr = udp_socket.recvfrom(1024)
                     flags, seq, ack, _ = decode_message(data)
-                    if flags == 0b01 and ack == sequence_number:
+                    if flags == 0b01 and ack == sequence_number and seq == sequence_number + 1:
                         ack_received.set()
                         sequence_number += 1
                         print("[METRIC] ACK recebido do servidor")
@@ -223,10 +259,10 @@ def send_metrics():
             time.sleep(1)
 
 # Função para obter ping
-def get_ping():
+def get_ping(target_ip):
     try:
         result = subprocess.run(
-            ["ping", "-c", "4", HOST],
+            ["ping", "-c", "4", target_ip],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -306,6 +342,7 @@ def receive_task():
         data, addr = udp_socket.recvfrom(4096)
         _, _, _, payload = decode_message(data)
         task = json.loads(payload)
+        ping_target = task.get('ping_target')
         alert_conditions = task.get('alertflow_conditions', {})
         print(f"[TASK] Tarefa recebida: {task}")
     except Exception as e:
@@ -324,7 +361,10 @@ def start_agent():
         print("[HANDSHAKE] Conexão estabelecida com o servidor.")
         receive_task()
         tcp_connect()
-
+        
+        threading.Thread(target=collect_metrics, daemon=True).start()
+        time.sleep(0.1)
+        
         # Thread para envio periódico de métricas
         threading.Thread(target=send_metrics, daemon=True).start()
 
