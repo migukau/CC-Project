@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 
 # CONFIG:
-HOST = '10.2.2.1'   # IP do servidor
+HOST = '10.0.3.10'   # IP do servidor
 UDP_PORT = 24       # Porta UDP
 TCP_PORT = 64       # Porta TCP
 SEND_INTERVAL = 20  # Intervalo para monitoramento de agentes
@@ -73,6 +73,7 @@ def load_tasks():
     try:
         with open('tasks.json', 'r') as file:
             data = json.load(file)
+        
         with tasks_lock:
             for device in data['devices']:
                 agent_id = device['device_id']
@@ -81,8 +82,10 @@ def load_tasks():
                     'frequency': data['frequency'],
                     'device_metrics': device.get('device_metrics', {}),
                     'link_metrics': device.get('link_metrics', {}),
-                    'alertflow_conditions': device.get('alertflow_conditions', {})
+                    'alertflow_conditions': device.get('alertflow_conditions', {}),
+                    'ping_target': device.get('ping_target', '')  # Incluindo o ping_target aqui
                 }
+        
         #print("[SERVER] Tarefas carregadas com sucesso.")
     except FileNotFoundError:
         print("[SERVER] tasks.json não encontrado.")
@@ -97,9 +100,11 @@ def send_task_to_agent(agent_id, addr):
     with tasks_lock:
         task = tasks.get(agent_id)
     if task:
+        # Adiciona o IP do outro agente que o agente deve monitorar para o ping
+        ping_target = task.get("ping_target", "")
         task_message = json.dumps(task)
         udp_socket.sendto(encode_message(0b10, 0, 0, task_message), addr)
-        #print(f"[SERVER] Tarefa enviada para {agent_id}")
+        #print(f"[SERVER] Tarefa enviada para {agent_id} com o ping_target {ping_target}")
     else:
         print(f"[SERVER] Nenhuma tarefa encontrada para {agent_id}")
 
@@ -285,6 +290,8 @@ def clear_terminal():
     sys.stdout.write('\033c')  # ANSI escape code para limpar o terminal
     sys.stdout.flush()
 
+# Flag para mostrar os erros no menu 
+show_errors = False
 # Mostrar menu de agentes (com questionary)
 def show_agents_menu():
     while not shutdown_event.is_set():
@@ -296,15 +303,24 @@ def show_agents_menu():
         else:
             for agente_id,metricas in metrics_data.items():
                 print(f"{agente_id}: {metricas['metrics']}\n")
+        
+        if show_errors:
+            print("Erros\n")
 
         # Mostrar as opções no menu
         option = questionary.select(
             "Escolha uma opção:",
-            choices=["Atualizar lista de agentes", "Mostrar Alertas","Sair"]
+            choices=["Atualizar lista de agentes","Mostar Erros", "Mostrar Alertas","Sair"]
         ).ask()
 
         if option == "Atualizar lista de agentes":
             # Atualiza o menu
+            continue
+        elif option == "Mostrar Erros":
+            if show_errors:
+                show_errors = False
+            else:
+                show_errors = True
             continue
         elif option == "Mostrar Alertas":
             show_alerts_menu()
@@ -339,10 +355,24 @@ def show_alerts_menu():
         elif option == "Voltar":
             show_agents_menu()
 
+def create_log_files():
+    if os.path.exists("alerts_log.csv"):
+        os.remove("alerts_log.csv")
+    
+    open("alerts_log.csv", 'w')
+
+    if os.path.exists("metrics_log.csv"):
+        os.remove("metrics_log.csv")
+    
+    open("metrics_log.csv", 'w')
+    
 # Iniciar o servidor
 def start_server():
     # Load do JSON
     load_tasks()
+    
+    # Cria os ficheiros de log
+    create_log_files()
 
     # Iniciar threads
     threading.Thread(target=udp_listener, daemon=True).start()
