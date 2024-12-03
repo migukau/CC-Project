@@ -90,20 +90,49 @@ def udp_handshake():
 # Lista global de métricas
 metric_list = []
 
-# Coleta e verificação de métricas
-def collect_and_check_metrics():
-    """Coleta métricas e verifica thresholds para alertas."""
-    global metric_list  # Usar a lista global
+# Função para coletar e verificar métricas
+# Function to only collect metrics for reporting
+def collect_metrics(store=True):
+    global metric_list
 
     metric_data = {}
     device_metrics = task.get('device_metrics', {})
     link_metrics = task.get('link_metrics', {})
 
+    # Collect CPU Usage
+    if "cpu_usage" in device_metrics:
+        cpu_usage = psutil.cpu_percent(interval=0)  # Non-blocking call
+        metric_data["cpu_usage"] = cpu_usage
+        if store:
+            metric_list.append({"cpu_usage": cpu_usage})
+
+    # Collect RAM Usage
+    if "ram_usage" in device_metrics:
+        ram_usage = psutil.virtual_memory().percent
+        metric_data["ram_usage"] = ram_usage
+        if store:
+            metric_list.append({"ram_usage": ram_usage})
+
+    # Collect Latency
+    if "latency" in link_metrics:
+        ping_target = task.get('ping_target', HOST)
+        latency = get_ping(ping_target)
+        metric_data["latency"] = latency
+        if store:
+            metric_list.append({"latency": latency})
+
+    return metric_data
+
+
+def check_for_alerts():
+    global alerts_sent
+
+    device_metrics = task.get('device_metrics', {})
+    link_metrics = task.get('link_metrics', {})
+    
     # CPU Usage
     if "cpu_usage" in device_metrics:
-        cpu_usage = psutil.cpu_percent(interval=1)
-        metric_data["cpu_usage"] = cpu_usage
-        metric_list.append({"cpu_usage": cpu_usage})  # Adiciona à lista de métricas
+        cpu_usage = psutil.cpu_percent(interval=0.5)  # Short interval for quick CPU check
         if "cpu_usage" in alert_conditions and cpu_usage > alert_conditions["cpu_usage"]:
             if not alerts_sent["cpu_usage"]:
                 send_alert("cpu_usage", cpu_usage)
@@ -111,33 +140,26 @@ def collect_and_check_metrics():
     # RAM Usage
     if "ram_usage" in device_metrics:
         ram_usage = psutil.virtual_memory().percent
-        metric_data["ram_usage"] = ram_usage
-        metric_list.append({"ram_usage": ram_usage})  # Adiciona à lista de métricas
         if "ram_usage" in alert_conditions and ram_usage > alert_conditions["ram_usage"]:
             if not alerts_sent["ram_usage"]:
                 send_alert("ram_usage", ram_usage)
 
     # Latency (Ping to another agent)
     if "latency" in link_metrics:
-        ping_target = task.get('ping_target')
-        #if ping_target is None:
-        #    print("[ERROR] 'ping_target' não encontrado na task. Usando IP padrão.")
-        #    ping_target = "10.3.3.3"  # IP padrão, se não encontrado na task
-        latency = get_ping(ping_target)  # Faz o ping para o IP do outro agente
-        metric_data["latency"] = latency
-        metric_list.append({"latency": latency})  # Adiciona à lista de métricas
-        if "latency" in alert_conditions and latency != -1 and latency > alert_conditions["latency"]:
+        ping_target = task.get('ping_target', HOST)  # Default ping target to server if not set
+        latency = get_ping(ping_target)
+        if latency is not None and "latency" in alert_conditions and latency > alert_conditions["latency"]:
             if not alerts_sent["latency"]:
                 send_alert("latency", latency)
-        elif latency == -1:
-            print(f"[ALERT] Não foi possível fazer ping para {ping_target}, retornando latência -1")
-
-    return metric_data
+ 
 
 
 # Função que calcula a média das métricas
 def mean_metrics():
     global metric_list  # Usar a lista global
+
+    if not metric_list:
+        return []
 
     # Dicionário para armazenar as somas das métricas e contagem dos valores válidos
     summed_metrics = {"cpu_usage": 0, "ram_usage": 0, "latency": 0}
@@ -171,13 +193,13 @@ def mean_metrics():
     print(f'{metric_list}')
     return mean_data
 
-
 # Função para monitorar alertas
 def monitor_alerts():
     while True:
         if task:
-            collect_and_check_metrics()
-        time.sleep(5)  # Frequência de monitoramento
+            check_for_alerts()
+        time.sleep(5)  
+
 
 
 
@@ -192,9 +214,9 @@ def send_metrics():
         if task:
             # Média das métricas dos ultimos n segundos passados
             metric_data = mean_metrics()
-
+            # /!\ 
             if not metric_data:
-                metric_data = collect_and_check_metrics()
+                metric_data = collect_metrics(False)
 
             # Cria payload e envia métricas
             payload = json.dumps({
@@ -240,7 +262,6 @@ def send_metrics():
 # Função para obter ping
 def get_ping(target_ip):
     try:
-        # Fazer o ping para o IP do outro agente
         result = subprocess.run(
             ["ping", "-c", "4", target_ip],
             stdout=subprocess.PIPE,
@@ -253,11 +274,8 @@ def get_ping(target_ip):
                 avg_rtt = float(line.split("/")[4])  # RTT médio (ms)
                 return avg_rtt
     except Exception as e:
-        print(f"Erro ao obter ping para {target_ip}: {e}")
-        return -1  # Retorna -1 caso não consiga fazer o ping
-
-    return -1  # Retorna -1 se não conseguir obter o ping
-
+        print(f"Erro ao obter ping: {e}")
+    return None
 
 # Envio de alertas
 def send_alert(alert_type, value):
@@ -317,7 +335,6 @@ def tcp_connect():
     except Exception as e:
         print(f"[TCP] Erro ao conectar: {e}")
 
-
 # Receber tarefa do servidor
 def receive_task():
     global task, alert_conditions
@@ -326,23 +343,13 @@ def receive_task():
         data, addr = udp_socket.recvfrom(4096)
         _, _, _, payload = decode_message(data)
         task = json.loads(payload)
-
-        # Depuração: Verificar se 'ping_target' está na task
-        print(f"[TASK] Task recebida: {task}")
         ping_target = task.get('ping_target')
-        if ping_target:
-            print(f"[TASK] ping_target encontrado: {ping_target}")
-        else:
-            print("[ERROR] ping_target não encontrado na task!")
-
         alert_conditions = task.get('alertflow_conditions', {})
-        print(f"[TASK] Alert conditions: {alert_conditions}")
-        
+        print(f"[TASK] Tarefa recebida: {task}")
     except Exception as e:
         print(f"[TASK] Erro ao receber tarefa: {e}")
         task = {}
         alert_conditions = {}
-
 
 # Programa principal
 def start_agent():
@@ -361,6 +368,8 @@ def start_agent():
 
         # Thread para monitoramento de alertas
         threading.Thread(target=monitor_alerts, daemon=True).start()
+
+        threading.Thread(target=collect_metrics, daemon=True).start()
 
         while True:
             time.sleep(1)
