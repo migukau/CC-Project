@@ -39,6 +39,16 @@ tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 tcp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 tcp_socket.bind((HOST, TCP_PORT))
 
+# Flag para mostra o menu de erros
+show_errors = False
+
+# Array para armazenar mensagens de erros ou alertas
+errors = []
+
+# Array para armazenar logs de conexões do servidor
+logs = []
+logs_lock = threading.Lock()
+
 # Evento de controlo para encerrar o servidor
 shutdown_event = threading.Event()
 
@@ -53,7 +63,6 @@ def encode_message(flags, seq, ack, payload):
 
     return header_bytes + payload_bytes
 
-
 def decode_message(message):
     header = int.from_bytes(message[:7], 'big')
     
@@ -65,8 +74,6 @@ def decode_message(message):
 
     payload = message[7:7 + length]
     return flags, seq, ack, payload.decode() if payload else ""
-
-
 
 # Leitura das tasks do JSON
 def load_tasks():
@@ -86,14 +93,14 @@ def load_tasks():
                     'ping_target': device.get('ping_target', '')  # Incluindo o ping_target aqui
                 }
         
-        #print("[SERVER] Tarefas carregadas com sucesso.")
+        with logs_lock:
+            logs.append("[SERVER] Tarefas carregadas com sucesso.")
     except FileNotFoundError:
-        print("[SERVER] tasks.json não encontrado.")
+        errors.append("[SERVER] tasks.json não encontrado.")
     except json.JSONDecodeError as e:
-        print(f"[SERVER] Erro ao decodificar tasks.json: {e}")
+        errors.append(f"[SERVER] Erro ao decodificar tasks.json: {e}")
     except Exception as e:
-        print(f"[SERVER] Erro ao carregar tarefas: {e}")
-
+        errors.append(f"[SERVER] Erro ao carregar tarefas: {e}")
 
 # Envia as tasks ao agente correspondente
 def send_task_to_agent(agent_id, addr):
@@ -104,14 +111,15 @@ def send_task_to_agent(agent_id, addr):
         ping_target = task.get("ping_target", "")
         task_message = json.dumps(task)
         udp_socket.sendto(encode_message(0b10, 0, 0, task_message), addr)
-        #print(f"[SERVER] Tarefa enviada para {agent_id} com o ping_target {ping_target}")
+        with logs_lock:
+            logs.append(f"[SERVER] Tarefa enviada para {agent_id} com o ping_target {ping_target}")
     else:
-        print(f"[SERVER] Nenhuma tarefa encontrada para {agent_id}")
-
+        errors.append(f"[SERVER] Nenhuma tarefa encontrada para {agent_id}")
 
 # UDP Handshake e Comunicação
 def udp_listener():
-    #print("[UDP] Servidor está à espera de mensagens...")
+    with logs_lock:
+        logs.append("[UDP] Servidor está à espera de mensagens...")
     while True:
         try:
             # Receber mensagem do cliente
@@ -119,7 +127,8 @@ def udp_listener():
             flags, seq, ack, payload = decode_message(data)
 
             if flags == 0b00:  # SYN
-                #print(f"[HANDSHAKE] Recebido SYN de {addr}: seq={seq}, payload={payload}")
+                with logs_lock:
+                    logs.append(f"[HANDSHAKE] Recebido SYN de {addr}: seq={seq}, payload={payload}")
                 agent_id = payload
 
                 # Atualizar lista de agentes com lock
@@ -129,10 +138,12 @@ def udp_listener():
                 # Enviar SYN-ACK
                 syn_ack_message = encode_message(0b01, seq + 1, seq + 1, "")
                 udp_socket.sendto(syn_ack_message, addr)
-                #print(f"[HANDSHAKE] Enviado SYN-ACK para {agent_id}")
+                with logs_lock:
+                    logs.append(f"[HANDSHAKE] Enviado SYN-ACK para {agent_id}")
 
             elif flags == 0b01:  # ACK
-                #print(f"[HANDSHAKE] ACK recebido de {addr}: seq={seq}, ack={ack}")
+                with logs_lock:
+                    logs.append(f"[HANDSHAKE] ACK recebido de {addr}: seq={seq}, ack={ack}")
 
                 # Enviar tarefa correspondente ao agente
                 send_task_to_agent(agent_id, addr)
@@ -142,9 +153,7 @@ def udp_listener():
                 process_metric_message(data, addr)
 
         except Exception as e:
-            print(f"[UDP] Erro: {e}")
-
-
+            errors.append(f"[UDP] Erro: {e}")
 
 # Processar métricas recebidas e enviar ACK
 def process_metric_message(data, addr):
@@ -172,10 +181,12 @@ def process_metric_message(data, addr):
                 "metrics": metrics
             })
 
-        #if flags == 0b10:
-            #print(f"[METRIC] Métricas recebidas de {agent_id}: {metrics}")
-        #elif flags == 0b11:
-            #print(f"[METRIC] Retransmissão recebida de {agent_id}: {metrics}")
+        if flags == 0b10:
+            with logs_lock:
+                logs.append(f"[METRIC] Métricas recebidas de {agent_id}: {metrics}")
+        elif flags == 0b11:
+            with logs_lock:
+                logs.append(f"[METRIC] Retransmissão recebida de {agent_id}: {metrics}")
 
         # Atualizar último visto
         with agents_lock:
@@ -183,12 +194,12 @@ def process_metric_message(data, addr):
                 agents[agent_id]["last_seen"] = time.time()
 
     except Exception as e:
-        print(f"[METRIC] Erro ao processar métricas: {e}")
-
+        errors.append(f"[METRIC] Erro ao processar métricas: {e}")
 
 # TCP Comunicação para alertas
 def handle_tcp_connection(conn, addr):
-    #print(f"[TCP] Conexão estabelecida com {addr}")
+    with logs_lock:
+        logs.append(f"[TCP] Conexão estabelecida com {addr}")
     try:
         while True:
             data = conn.recv(4096)
@@ -214,7 +225,8 @@ def handle_tcp_connection(conn, addr):
             elif flags == 0x03:
                 alert_type = "Latência"
 
-            #print(f"[ALERT] Recebido alerta de {alert_type} do agente {agent_id} com valor {value} em {alert_timestamp}")
+            with logs_lock:
+                logs.append(f"[ALERT] Recebido alerta de {alert_type} do agente {agent_id} com valor {value} em {alert_timestamp}")
 
             # log do alerta
             log_alerts_to_csv(agent_id, f"{formatted_time};{alert_type};{value}")
@@ -229,22 +241,21 @@ def handle_tcp_connection(conn, addr):
             conn.sendall(ack_message)
 
     except Exception as e:
-        print(f"[TCP] Erro: {e}")
+        errors.append(f"[TCP] Erro: {e}")
     finally:
         conn.close()
-
-
 
 # Thread principal do TCP
 def tcp_main_thread():
     tcp_socket.listen()
-    #print("[TCP] Servidor está à espera de conexões...")
+    with logs_lock:
+        logs.append("[TCP] Servidor está à espera de conexões...")
     while True:
         try:
             conn, addr = tcp_socket.accept()
             threading.Thread(target=handle_tcp_connection, args=(conn, addr), daemon=True).start()
         except Exception as e:
-            #print(f"[TCP] Erro no thread principal: {e}")
+            errors.append(f"[TCP] Erro no thread principal: {e}")
             break
 
 # Monitorar inatividade dos agentes
@@ -255,7 +266,8 @@ def monitor_agents():
         with agents_lock:
             for agent_id, info in list(agents.items()):
                 if now - info["last_seen"] > 2 * SEND_INTERVAL + 2:
-                    #print(f"[MONITOR] Agente {agent_id} removido por inatividade")
+                    with logs_lock:
+                        logs.append(f"[MONITOR] Agente {agent_id} removido por inatividade")
                     del agents[agent_id]
                     del metrics_data[agent_id]
 
@@ -290,10 +302,10 @@ def clear_terminal():
     sys.stdout.write('\033c')  # ANSI escape code para limpar o terminal
     sys.stdout.flush()
 
-# Flag para mostrar os erros no menu 
-show_errors = False
 # Mostrar menu de agentes (com questionary)
 def show_agents_menu():
+    global show_errors
+     
     while not shutdown_event.is_set():
         # Mostrar a lista de agentes conectados
         clear_terminal()
@@ -305,32 +317,37 @@ def show_agents_menu():
                 print(f"{agente_id}: {metricas['metrics']}\n")
         
         if show_errors:
-            print("Erros\n")
+            print("Erros:")
+            if errors == []:
+                print("Não existem erros.\n")
+            else:
+                for message in errors:
+                    print(message)
 
         # Mostrar as opções no menu
         option = questionary.select(
             "Escolha uma opção:",
-            choices=["Atualizar lista de agentes","Mostar Erros", "Mostrar Alertas","Sair"]
-        ).ask()
+            choices=["Atualizar lista de agentes","Toggle Erros", "Mostrar Alertas","Mostrar logs do servidor","Sair"]
+        ).ask() # a thread da lock aqui
 
         if option == "Atualizar lista de agentes":
             # Atualiza o menu
             continue
-        elif option == "Mostrar Erros":
-            if show_errors:
-                show_errors = False
-            else:
-                show_errors = True
+        elif option == "Toggle Erros":
+            show_errors = not show_errors
             continue
         elif option == "Mostrar Alertas":
             show_alerts_menu()
-
+        elif option == "Mostrar logs do servidor":
+            show_logs_menu()
         elif option == "Sair":
             clear_terminal()
             print("Encerrando menu de agentes...")
             shutdown_event.set()
             break
 
+        time.sleep(5)
+            
 def show_alerts_menu():
     while not shutdown_event.is_set():
         clear_terminal()
@@ -355,6 +372,28 @@ def show_alerts_menu():
         elif option == "Voltar":
             show_agents_menu()
 
+def show_logs_menu():
+    while not shutdown_event.is_set():
+        clear_terminal()
+        print("Logs:\n")
+
+        if logs == []:
+            print("Não existem logs.\n")
+        else:
+            for message in logs:
+                print(message)
+  
+        # Mostrar as opções no menu
+        option = questionary.select(
+            "Escolha uma opção:",
+               choices=["Atualizar lista de logs", "Voltar"]
+        ).ask()
+    
+        if option == "Atualizar lista de logs":
+            continue
+        elif option == "Voltar":
+            show_agents_menu()
+
 def create_log_files():
     if os.path.exists("alerts_log.csv"):
         os.remove("alerts_log.csv")
@@ -373,7 +412,7 @@ def start_server():
     
     # Cria os ficheiros de log
     create_log_files()
-
+    
     # Iniciar threads
     threading.Thread(target=udp_listener, daemon=True).start()
     threading.Thread(target=tcp_main_thread, daemon=True).start()
