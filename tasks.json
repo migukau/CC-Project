@@ -1,52 +1,52 @@
 {
-  "task_id": "TASK_001",
-  "frequency": 20,
-  "devices": [
-    {
-      "device_id": "Portatil1",
-      "device_metrics": {
-        "cpu_usage": true,
-        "ram_usage": true
+    "task_id": "TASK_001",
+    "frequency": 20,
+    "devices": [
+      {
+        "device_id": "PC2",
+        "device_metrics": {
+          "cpu_usage": true,
+          "ram_usage": true
+        },
+        "link_metrics": {
+          "latency": true
+        },
+        "alertflow_conditions": {
+          "cpu_usage": 3,
+          "ram_usage": 90,
+          "latency": 100
+        },
+        "ping_target": "10.0.6.10"
       },
-      "link_metrics": {
-        "latency": true
+      {
+        "device_id": "PC3",
+        "device_metrics": {
+          "cpu_usage": true,
+          "ram_usage": false
+        },
+        "link_metrics": {
+          "latency": true
+        },
+        "alertflow_conditions": {
+          "cpu_usage": 75,
+          "latency": 150
+        },
+        "ping_target": "10.0.7.10"
       },
-      "alertflow_conditions": {
-        "cpu_usage": 3,
-        "ram_usage": 90,
-        "latency": 100
-      },
-      "ping_target": "10.3.3.3"
-    },
-    {
-      "device_id": "Portatil2",
-      "device_metrics": {
-        "cpu_usage": true,
-        "ram_usage": false
-      },
-      "link_metrics": {
-        "latency": true
-      },
-      "alertflow_conditions": {
-        "cpu_usage": 75,
-        "latency": 150
-      },
-      "ping_target": "10.1.1.1"
-    },
-    {
-      "device_id": "Foca",
-      "device_metrics": {
-        "cpu_usage": true,
-        "ram_usage": false
-      },
-      "link_metrics": {
-        "latency": true
-      },
-      "alertflow_conditions": {
-        "cpu_usage": 75,
-        "latency": 150
-      },
-      "ping_target": "10.1.1.2"
-    }
-  ]
-}
+      {
+        "device_id": "PC4",
+        "device_metrics": {
+          "cpu_usage": true,
+          "ram_usage": false
+        },
+        "link_metrics": {
+          "latency": true
+        },
+        "alertflow_conditions": {
+          "cpu_usage": 75,
+          "latency": 150
+        },
+        "ping_target": "10.0.5.10"
+      }
+    ]
+  }
