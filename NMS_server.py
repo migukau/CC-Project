@@ -137,12 +137,15 @@ def udp_listener():
             if flags == 0b00:  # SYN
                 with logs_lock:
                     logs.append(f"[HANDSHAKE] Recebido SYN de {addr}: seq={seq}, payload={payload}")
-                agent_id = payload
+                agent_id = payload.strip()  #
 
-                # Atualizar lista de agentes com lock
+                # Atualizar lista de agentes
                 with agents_lock:
-                    agents[agent_id] = {"address": addr, "last_seen": time.time()}
-                
+                    if agent_id not in agents:
+                        agents[agent_id] = {"address": addr, "last_seen": time.time(), "task_sent": False}
+                    else:
+                        agents[agent_id]["last_seen"] = time.time()
+
                 # Enviar SYN-ACK
                 syn_ack_message = encode_message(0b01, seq + 1, seq + 1, "")
                 udp_socket.sendto(syn_ack_message, addr)
@@ -154,15 +157,21 @@ def udp_listener():
                     logs.append(f"[HANDSHAKE] ACK recebido de {addr}: seq={seq}, ack={ack}")
 
                 # Enviar tarefa correspondente ao agente
-                send_task_to_agent(agent_id, addr)
+                with agents_lock:
+                    if not agents[agent_id]["task_sent"]:
+                        send_task_to_agent(agent_id, addr)
+                        agents[agent_id]["task_sent"] = True
 
             elif flags == 0b10 or flags == 0b11:  # DATA ou Retransmissão
                 # Processar métricas recebidas
                 process_metric_message(data, addr)
 
+        except KeyError as ke:
+            with logs_lock:
+                logs.append(f"[UDP] Erro de chave: {ke}")
         except Exception as e:
-            with errors_lock:
-                errors.append(f"[UDP] Erro: {e}")
+            with logs_lock:
+                logs.append(f"[UDP] Erro inesperado: {e}")
 
 # Processar métricas recebidas e enviar ACK
 def process_metric_message(data, addr):
