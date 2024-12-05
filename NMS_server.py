@@ -16,7 +16,6 @@ SEND_INTERVAL = 20  # Intervalo para monitoramento de agentes
 
 # Dict para gerir os agentes
 agents = {}
-#agents = {"PC1" : {"Cpu Usage" : "85%"}}
 agents_lock = threading.Lock()
 
 # Armazenamento de métricas
@@ -31,6 +30,10 @@ alerts_lock = threading.Lock()
 tasks = {}
 tasks_lock = threading.Lock()
 
+# Guardar numeros de sequencia recebidos 
+sequence_numbers = {}
+sequence_numbers_lock = threading.Lock()
+
 # SOCKETS:
 udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 udp_socket.bind((HOST, UDP_PORT))
@@ -44,6 +47,7 @@ show_errors = False
 
 # Array para armazenar mensagens de erros ou alertas
 errors = []
+errors_lock = threading.Lock()
 
 # Array para armazenar logs de conexões do servidor
 logs = []
@@ -96,11 +100,14 @@ def load_tasks():
         with logs_lock:
             logs.append("[SERVER] Tarefas carregadas com sucesso.")
     except FileNotFoundError:
-        errors.append("[SERVER] tasks.json não encontrado.")
+        with errors_lock:
+            errors.append("[SERVER] tasks.json não encontrado.")
     except json.JSONDecodeError as e:
-        errors.append(f"[SERVER] Erro ao decodificar tasks.json: {e}")
+        with errors_lock:
+            errors.append(f"[SERVER] Erro ao decodificar tasks.json: {e}")
     except Exception as e:
-        errors.append(f"[SERVER] Erro ao carregar tarefas: {e}")
+        with errors_lock:
+            errors.append(f"[SERVER] Erro ao carregar tarefas: {e}")
 
 # Envia as tasks ao agente correspondente
 def send_task_to_agent(agent_id, addr):
@@ -114,7 +121,8 @@ def send_task_to_agent(agent_id, addr):
         with logs_lock:
             logs.append(f"[SERVER] Tarefa enviada para {agent_id} com o ping_target {ping_target}")
     else:
-        errors.append(f"[SERVER] Nenhuma tarefa encontrada para {agent_id}")
+        with errors_lock:
+            errors.append(f"[SERVER] Nenhuma tarefa encontrada para {agent_id}")
 
 # UDP Handshake e Comunicação
 def udp_listener():
@@ -153,7 +161,8 @@ def udp_listener():
                 process_metric_message(data, addr)
 
         except Exception as e:
-            errors.append(f"[UDP] Erro: {e}")
+            with errors_lock:
+                errors.append(f"[UDP] Erro: {e}")
 
 # Processar métricas recebidas e enviar ACK
 def process_metric_message(data, addr):
@@ -168,33 +177,44 @@ def process_metric_message(data, addr):
         ack_message = encode_message(0b01, seq + 1, seq, "")
         udp_socket.sendto(ack_message, addr)
 
-        # Armazenar métricas
-        with metrics_lock:
-            if agent_id not in metrics_data:
-                metrics_data[agent_id] = []
-            metrics_data[agent_id] = ({
-                "timestamp": timestamp,
-                "metrics": metrics
-            })
-            log_metrics_to_csv(agent_id, {
-                "timestamp": timestamp,
-                "metrics": metrics
-            })
+        if agent_id in sequence_numbers and seq in sequence_numbers[agent_id]:
+            with errors_lock:
+                errors.append(f"Mensagem duplicada recebida de {agent_id} com o número de sequência")
+        else:    
+            # Guardar Sequence number
+            with sequence_numbers_lock:
+                if agent_id not in sequence_numbers:
+                    sequence_numbers[agent_id] = []
+                sequence_numbers[agent_id].append(seq)
+            
+            # Armazenar métricas
+            with metrics_lock:
+                if agent_id not in metrics_data:
+                    metrics_data[agent_id] = []
+                metrics_data[agent_id] = ({
+                    "timestamp": timestamp,
+                    "metrics": metrics
+                })
+                log_metrics_to_csv(agent_id, {
+                    "timestamp": timestamp,
+                    "metrics": metrics
+                })
 
-        if flags == 0b10:
-            with logs_lock:
-                logs.append(f"[METRIC] Métricas recebidas de {agent_id}: {metrics}")
-        elif flags == 0b11:
-            with logs_lock:
-                logs.append(f"[METRIC] Retransmissão recebida de {agent_id}: {metrics}")
+            if flags == 0b10:
+                with logs_lock:
+                    logs.append(f"[METRIC] Métricas recebidas de {agent_id}: {metrics}")
+            elif flags == 0b11:
+                with logs_lock:
+                    logs.append(f"[METRIC] Retransmissão recebida de {agent_id}: {metrics}")
 
-        # Atualizar último visto
-        with agents_lock:
-            if agent_id in agents:
-                agents[agent_id]["last_seen"] = time.time()
+            # Atualizar último visto
+            with agents_lock:
+                if agent_id in agents:
+                    agents[agent_id]["last_seen"] = time.time()
 
     except Exception as e:
-        errors.append(f"[METRIC] Erro ao processar métricas: {e}")
+        with errors_lock:
+            errors.append(f"[METRIC] Erro ao processar métricas: {e}")
 
 # TCP Comunicação para alertas
 def handle_tcp_connection(conn, addr):
@@ -345,8 +365,6 @@ def show_agents_menu():
             print("Encerrando menu de agentes...")
             shutdown_event.set()
             break
-
-        time.sleep(5)
             
 def show_alerts_menu():
     while not shutdown_event.is_set():
